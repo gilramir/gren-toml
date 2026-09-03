@@ -1,0 +1,598 @@
+module Toml.Strings exposing
+    ( Kind(..)
+    , kindOf, delimiter, value
+    , isBasicUnescaped, isLiteralChar, isNonAscii, isCommentChar
+    )
+
+{-| Reading TOML's four kinds of string literal into the strings they mean.
+
+[`value`](#value) takes the whole literal, delimiters included, and gives back
+the string or nothing. It is where escapes are resolved, where the newline
+after an opening `"""` is trimmed, and where the characters the grammar does
+not allow in a string are refused -- which is what most of the suite's 77
+invalid string cases are about.
+
+The delimiters have to be part of the input because they are what says which of
+the four kinds this is, and the four have different rules. Finding where a
+literal ends is the parser's job, not this module's: it needs the escapes to
+know, and it has the source to scan.
+
+
+## Newlines are not normalised
+
+The spec says a parser should feel free to normalise newlines inside a
+multi-line string "to whatever makes sense for their platform". This one does
+not: a CRLF between the delimiters stays a CRLF in the value. That keeps the
+value equal to the bytes it came from, which is the principle the rest of this
+package is built on, and `toml-test` has no case either way.
+
+A lone carriage return is still an error, in a string as everywhere else.
+
+@docs Kind
+
+
+## Reading
+
+@docs kindOf, delimiter, value
+
+
+## Character classes
+
+The grammar's, exported because the parser needs the same ones to know where a
+literal ends and what a comment may contain.
+
+@docs isBasicUnescaped, isLiteralChar, isNonAscii, isCommentChar
+
+-}
+
+import Array exposing (Array)
+import Basics exposing (..)
+import Char
+import Maybe exposing (Maybe(..))
+import String
+
+
+{-| Which of the four kinds of string literal.
+
+The two `Ml` kinds are the triple-quoted ones, which may contain newlines and
+which trim a newline that follows the opening delimiter.
+
+-}
+type Kind
+    = Basic
+    | MlBasic
+    | Literal
+    | MlLiteral
+
+
+{-| Which kind a literal is, from the quotes it opens with.
+
+`Nothing` if it does not open with a quote or an apostrophe at all.
+
+-}
+kindOf : String -> Maybe Kind
+kindOf raw =
+    if String.startsWith (delimiter MlBasic) raw then
+        Just MlBasic
+
+    else if String.startsWith (delimiter MlLiteral) raw then
+        Just MlLiteral
+
+    else if String.startsWith (delimiter Basic) raw then
+        Just Basic
+
+    else if String.startsWith (delimiter Literal) raw then
+        Just Literal
+
+    else
+        Nothing
+
+
+{-| The text that opens and closes a literal of this kind.
+-}
+delimiter : Kind -> String
+delimiter kind =
+    when kind is
+        Basic ->
+            quote
+
+        MlBasic ->
+            quote ++ quote ++ quote
+
+        Literal ->
+            apostrophe
+
+        MlLiteral ->
+            apostrophe ++ apostrophe ++ apostrophe
+
+
+{-| The string a literal means.
+
+`Nothing` if the literal is malformed: an escape that is not one of the eleven,
+a `\u` that is not a Unicode scalar value, a control character, or a lone
+carriage return.
+
+The input has to be the whole literal including both delimiters, since that is
+what says which of the four kinds it is. A caller that has already found where
+the literal ends has that text anyway.
+
+-}
+value : String -> Maybe String
+value raw =
+    when kindOf raw is
+        Nothing ->
+            Nothing
+
+        Just kind ->
+            let
+                width =
+                    String.count (delimiter kind)
+            in
+            if String.count raw < 2 * width then
+                Nothing
+
+            else
+                let
+                    body =
+                        raw
+                            |> String.dropFirst width
+                            |> String.dropLast width
+                in
+                when kind is
+                    Literal ->
+                        verbatim { multiline = False } (String.toArray body)
+
+                    MlLiteral ->
+                        verbatim { multiline = True } (String.toArray (trimNewline body))
+
+                    Basic ->
+                        unescape { multiline = False } (String.toArray body)
+
+                    MlBasic ->
+                        unescape { multiline = True } (String.toArray (trimNewline body))
+
+
+{-| How many of `delim` start at `index`.
+
+`mlb-quotes` and `mll-quotes` are one or two of the delimiter character, so a
+multi-line body may contain runs of one or two of its own delimiter and is
+ended by the first run of three. That is what makes a literal opening with four
+quotes a string that starts with one.
+
+-}
+runLength : Char -> Array Char -> Int -> Int
+runLength delim chars index =
+    if Array.get index chars == Just delim then
+        1 + runLength delim chars (index + 1)
+
+    else
+        0
+
+
+{-| A run of one or two delimiters inside a multi-line body is content. Three
+would have ended the literal, so if three are still here the caller chomped
+wrongly and there is nothing sensible to return.
+-}
+keepDelimiters :
+    Char
+    -> Array Char
+    -> Int
+    -> String
+    -> (Int -> String -> Maybe String)
+    -> Maybe String
+keepDelimiters delim chars index acc step =
+    let
+        found =
+            runLength delim chars index
+    in
+    if found <= 2 then
+        step (index + found) (acc ++ String.repeat found (String.fromChar delim))
+
+    else
+        Nothing
+
+
+{-| "A newline immediately following the opening delimiter will be trimmed."
+One newline, and only one.
+-}
+trimNewline : String -> String
+trimNewline body =
+    if String.startsWith "\u{000D}\u{000A}" body then
+        String.dropFirst 2 body
+
+    else if String.startsWith "\u{000A}" body then
+        String.dropFirst 1 body
+
+    else
+        body
+
+
+
+-- THE TWO READERS
+
+
+{-| A literal string, which has no escapes at all. Every character has to be one
+the grammar allows; a multi-line one may also contain newlines, and this is
+where a lone carriage return is caught.
+-}
+verbatim : { multiline : Bool } -> Array Char -> Maybe String
+verbatim options chars =
+    let
+        step index acc =
+            when Array.get index chars is
+                Nothing ->
+                    Just acc
+
+                Just char ->
+                    if char == cr then
+                        if options.multiline && Array.get (index + 1) chars == Just lf then
+                            step (index + 2) (acc ++ crlf)
+
+                        else
+                            Nothing
+
+                    else if char == lf then
+                        if options.multiline then
+                            step (index + 1) (String.pushLast char acc)
+
+                        else
+                            Nothing
+
+                    else if char == apostropheChar && options.multiline then
+                        keepDelimiters apostropheChar chars index acc step
+
+                    else if isLiteralChar char then
+                        step (index + 1) (String.pushLast char acc)
+
+                    else
+                        Nothing
+    in
+    step 0 ""
+
+
+{-| A basic string, with the eleven escapes resolved.
+
+The multiline flag turns on two things at once: a bare newline becomes a legal
+character, and a backslash at the end of a line becomes `mlb-escaped-nl`, which
+swallows the line break and all the whitespace after it.
+
+-}
+unescape : { multiline : Bool } -> Array Char -> Maybe String
+unescape options chars =
+    let
+        step index acc =
+            when Array.get index chars is
+                Nothing ->
+                    Just acc
+
+                Just char ->
+                    if char == backslash then
+                        when escapeAt options chars (index + 1) is
+                            Just found ->
+                                step found.next (acc ++ found.text)
+
+                            Nothing ->
+                                Nothing
+
+                    else if char == cr then
+                        -- A newline is CRLF or LF. A carriage return on its own
+                        -- is not one, in a string or anywhere else.
+                        if options.multiline && Array.get (index + 1) chars == Just lf then
+                            step (index + 2) (acc ++ crlf)
+
+                        else
+                            Nothing
+
+                    else if char == lf then
+                        if options.multiline then
+                            step (index + 1) (String.pushLast char acc)
+
+                        else
+                            Nothing
+
+                    else if char == quoteChar && options.multiline then
+                        keepDelimiters quoteChar chars index acc step
+
+                    else if isBasicUnescaped char then
+                        step (index + 1) (String.pushLast char acc)
+
+                    else
+                        Nothing
+    in
+    step 0 ""
+
+
+{-| What follows a backslash, and where to carry on from.
+-}
+escapeAt : { multiline : Bool } -> Array Char -> Int -> Maybe { text : String, next : Int }
+escapeAt options chars index =
+    when Array.get index chars is
+        Nothing ->
+            Nothing
+
+        Just char ->
+            when simpleEscape char is
+                Just text ->
+                    Just { text = text, next = index + 1 }
+
+                Nothing ->
+                    if char == 'x' then
+                        codePoint chars (index + 1) 2
+
+                    else if char == 'u' then
+                        codePoint chars (index + 1) 4
+
+                    else if char == 'U' then
+                        codePoint chars (index + 1) 8
+
+                    else if options.multiline then
+                        -- mlb-escaped-nl = escape ws newline *( wschar / newline )
+                        lineEndingEscape chars index
+
+                    else
+                        Nothing
+
+
+simpleEscape : Char -> Maybe String
+simpleEscape char =
+    when Char.toCode char is
+        0x22 ->
+            Just quote
+
+        0x5C ->
+            Just "\\"
+
+        0x62 ->
+            Just "\u{0008}"
+
+        0x65 ->
+            Just "\u{001B}"
+
+        0x66 ->
+            Just "\u{000C}"
+
+        0x6E ->
+            Just "\u{000A}"
+
+        0x72 ->
+            Just "\u{000D}"
+
+        0x74 ->
+            Just "\u{0009}"
+
+        _ ->
+            Nothing
+
+
+{-| `\xHH`, `\uHHHH` or `\UHHHHHHHH`: exactly that many hex digits, and the
+result has to be a Unicode scalar value. The surrogate range is not one, so
+`\uD800` is not a character however well formed it looks.
+-}
+codePoint : Array Char -> Int -> Int -> Maybe { text : String, next : Int }
+codePoint chars index width =
+    let
+        collect offset acc =
+            if offset == width then
+                Just acc
+
+            else
+                when Array.get (index + offset) chars is
+                    Just char ->
+                        if Char.isHexDigit char then
+                            collect (offset + 1) (acc * 16 + hexValue char)
+
+                        else
+                            Nothing
+
+                    Nothing ->
+                        Nothing
+    in
+    collect 0 0
+        |> Maybe.andThen
+            (\code ->
+                if isScalarValue code then
+                    Just
+                        { text = String.fromChar (Char.fromCode code)
+                        , next = index + width
+                        }
+
+                else
+                    Nothing
+            )
+
+
+isScalarValue : Int -> Bool
+isScalarValue code =
+    code <= 0x0010FFFF && (code < 0xD800 || code > 0xDFFF)
+
+
+hexValue : Char -> Int
+hexValue char =
+    let
+        code =
+            Char.toCode char
+    in
+    if code <= 0x39 then
+        code - 0x30
+
+    else if code <= 0x46 then
+        code - 0x41 + 10
+
+    else
+        code - 0x61 + 10
+
+
+{-| A backslash at the end of a line: whitespace, then a newline, then all the
+whitespace and newlines that follow, and none of it is in the string.
+-}
+lineEndingEscape : Array Char -> Int -> Maybe { text : String, next : Int }
+lineEndingEscape chars index =
+    let
+        skipSpaces at =
+            when Array.get at chars is
+                Just char ->
+                    if char == space || char == tab then
+                        skipSpaces (at + 1)
+
+                    else
+                        at
+
+                Nothing ->
+                    at
+
+        skipAll at =
+            when Array.get at chars is
+                Just char ->
+                    if char == space || char == tab || char == lf then
+                        skipAll (at + 1)
+
+                    else if char == cr && Array.get (at + 1) chars == Just lf then
+                        skipAll (at + 2)
+
+                    else
+                        at
+
+                Nothing ->
+                    at
+
+        afterSpaces =
+            skipSpaces index
+    in
+    if Array.get afterSpaces chars == Just lf then
+        Just { text = "", next = skipAll (afterSpaces + 1) }
+
+    else if
+        (Array.get afterSpaces chars == Just cr)
+            && (Array.get (afterSpaces + 1) chars == Just lf)
+    then
+        Just { text = "", next = skipAll (afterSpaces + 2) }
+
+    else
+        Nothing
+
+
+
+-- CHARACTER CLASSES
+
+
+{-| `basic-unescaped`: what may appear in a `"..."` string without a backslash.
+
+Everything printable except the quote and the backslash, plus space and tab,
+plus anything outside ASCII. The control characters are not here, and neither is
+`DEL`, which is why `invalid/control` is 38 cases.
+
+-}
+isBasicUnescaped : Char -> Bool
+isBasicUnescaped char =
+    let
+        code =
+            Char.toCode char
+    in
+    (code == 0x20)
+        || (code == 0x09)
+        || (code == 0x21)
+        || (code >= 0x23 && code <= 0x5B)
+        || (code >= 0x5D && code <= 0x7E)
+        || isNonAscii char
+
+
+{-| `literal-char`: what may appear in a `'...'` string.
+
+The same idea without the backslash rule, so the apostrophe is the only
+printable character missing.
+
+-}
+isLiteralChar : Char -> Bool
+isLiteralChar char =
+    let
+        code =
+            Char.toCode char
+    in
+    (code == 0x09)
+        || (code >= 0x20 && code <= 0x26)
+        || (code >= 0x28 && code <= 0x7E)
+        || isNonAscii char
+
+
+{-| `non-ascii`: anything above ASCII that is a Unicode scalar value.
+
+The surrogate range is excluded, which matters less than it looks: a Gren
+`String` has already come through a UTF-8 decode that would have refused one.
+
+-}
+isNonAscii : Char -> Bool
+isNonAscii char =
+    let
+        code =
+            Char.toCode char
+    in
+    (code >= 0x80 && code <= 0xD7FF) || (code >= 0xE000 && code <= 0x0010FFFF)
+
+
+{-| `non-eol`: what may appear in a comment.
+
+Tab, the printable ASCII range, and anything above it. Not `DEL`, and not the
+other control characters.
+
+-}
+isCommentChar : Char -> Bool
+isCommentChar char =
+    let
+        code =
+            Char.toCode char
+    in
+    (code == 0x09) || (code >= 0x20 && code <= 0x7E) || isNonAscii char
+
+
+
+-- CHARACTERS WORTH A NAME
+
+
+cr : Char
+cr =
+    Char.fromCode 0x0D
+
+
+lf : Char
+lf =
+    Char.fromCode 0x0A
+
+
+tab : Char
+tab =
+    Char.fromCode 0x09
+
+
+space : Char
+space =
+    Char.fromCode 0x20
+
+
+backslash : Char
+backslash =
+    '\\'
+
+
+quoteChar : Char
+quoteChar =
+    Char.fromCode 0x22
+
+
+apostropheChar : Char
+apostropheChar =
+    Char.fromCode 0x27
+
+
+crlf : String
+crlf =
+    "\u{000D}\u{000A}"
+
+
+quote : String
+quote =
+    "\u{0022}"
+
+
+apostrophe : String
+apostrophe =
+    "\u{0027}"

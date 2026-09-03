@@ -4,11 +4,14 @@ module Main exposing (main)
 
   - `Numbers` is every integer and float in the official TOML test suite, the
     ones that must parse and the ones that must not.
+  - `Literals` is every string literal in it, likewise, including the
+    multi-line quote cases that decide where a `"""` ends.
 
 Run with `./run.sh`.
 
 -}
 
+import Literals exposing (literalsSuite)
 import Node
 import Numbers exposing (numbersSuite)
 import Test.Runner.UnitNode as U
@@ -19,5 +22,8 @@ main =
     U.run
         { name = "gren-toml"
         , version = "1.0.0"
-        , suites = [ numbersSuite ]
+        , suites =
+            [ numbersSuite
+            , literalsSuite
+            ]
         }

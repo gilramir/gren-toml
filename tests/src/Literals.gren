@@ -1,0 +1,270 @@
+module Literals exposing (literalsSuite)
+
+{-| Every string literal in the official TOML test suite.
+
+133 that must read as a particular string and 34 that must not read at all,
+lifted out of `toml-test`'s string and key directories and filtered to the
+`files-toml-1.1.0` manifest. 48 cases were skipped: a literal `Toml.Strings` is
+not being asked about, because it never ends, or because the file is not valid
+UTF-8 and so never reaches this layer at all.
+
+The interesting ones are the multi-line quotes. `"""lol\\""""""` is a string
+containing `lol"""`, and `""""one quote""""` is one containing `"one quote"`,
+because `mlb-quotes` lets a body end with one or two more delimiters than it
+looks like it should. The extractor has its own scanner for where a literal
+ends, written from the grammar rather than from the parser, so the two have to
+agree independently.
+
+@docs literalsSuite
+
+-}
+
+import Array exposing (Array)
+import Basics exposing (..)
+import Expect
+import Maybe exposing (Maybe(..))
+import String
+import Task
+import Test.Runner.UnitNode as U
+import Toml.Strings as Strings
+
+
+type alias Good =
+    { raw : String, want : String, file : String }
+
+
+type alias Bad =
+    { raw : String, file : String }
+
+
+good : Array Good
+good =
+    [ { raw = "\"\\\"one\\\"\"", want = "\"one\"", file = "valid/string/basic-escape-01.toml" }
+    , { raw = "\"\\\\\\\"one\"", want = "\\\"one", file = "valid/string/basic-escape-02.toml" }
+    , { raw = "\"\\\\\\\\\\\\\\\\\\\"one\"", want = "\\\\\\\\\"one", file = "valid/string/basic-escape-03.toml" }
+    , { raw = "\"\"", want = "", file = "valid/string/empty.toml" }
+    , { raw = "\"\"\"\nheeee\ngeeee\\  \n\n\n      \"\"\"", want = "heeee\ngeeee", file = "valid/string/ends-in-whitespace-escape.toml" }
+    , { raw = "\"\\e There is no escape! \\e\"", want = "\u{001b} There is no escape! \u{001b}", file = "valid/string/escape-esc.toml" }
+    , { raw = "\"String does not end here\\\" but ends here\\\\\"", want = "String does not end here\" but ends here\\", file = "valid/string/escape-tricky.toml" }
+    , { raw = "'String ends here\\'", want = "String ends here\\", file = "valid/string/escape-tricky.toml" }
+    , { raw = "'''There is no escape\\'''", want = "There is no escape\\", file = "valid/string/escape-tricky.toml" }
+    , { raw = "'''\n\\u007f'''", want = "\\u007f", file = "valid/string/escape-tricky.toml" }
+    , { raw = "\"\"\"When will it end? \\\"\"\"...\"\"\\\" should be here\\\"\"\"\"", want = "When will it end? \"\"\"...\"\"\" should be here\"", file = "valid/string/escape-tricky.toml" }
+    , { raw = "\"\"\"\n\\\\u0041\"\"\"", want = "\\u0041", file = "valid/string/escape-tricky.toml" }
+    , { raw = "\"\"\"\n\\u00a0\"\"\"", want = " ", file = "valid/string/escape-tricky.toml" }
+    , { raw = "\"\\\\x64\"", want = "\\x64", file = "valid/string/escaped-escape.toml" }
+    , { raw = "\"|\\\\.\"", want = "|\\.", file = "valid/string/escapes.toml" }
+    , { raw = "\"|\\b.\"", want = "|\u{0008}.", file = "valid/string/escapes.toml" }
+    , { raw = "\"|\\r.\"", want = "|\r.", file = "valid/string/escapes.toml" }
+    , { raw = "\"|\\u007F.\"", want = "|\u{007f}.", file = "valid/string/escapes.toml" }
+    , { raw = "\"|\\f.\"", want = "|\u{000c}.", file = "valid/string/escapes.toml" }
+    , { raw = "\"|\\n.\"", want = "|\n.", file = "valid/string/escapes.toml" }
+    , { raw = "\"|\\\\u.\"", want = "|\\u.", file = "valid/string/escapes.toml" }
+    , { raw = "\"|\\u005Cu.\"", want = "|\\u.", file = "valid/string/escapes.toml" }
+    , { raw = "\"|\\\\u0075.\"", want = "|\\u0075.", file = "valid/string/escapes.toml" }
+    , { raw = "\"|\\\\\\u0075.\"", want = "|\\u.", file = "valid/string/escapes.toml" }
+    , { raw = "\"|\\\".\"", want = "|\".", file = "valid/string/escapes.toml" }
+    , { raw = "\"|\\t.\"", want = "|\t.", file = "valid/string/escapes.toml" }
+    , { raw = "\"|\\u001F.\"", want = "|\u{001f}.", file = "valid/string/escapes.toml" }
+    , { raw = "\"\\x7f\"", want = "\u{007f}", file = "valid/string/hex-escape.toml" }
+    , { raw = "\"\\x68\\x65\\x6c\\x6c\\x6f\\x0a\"", want = "hello\n", file = "valid/string/hex-escape.toml" }
+    , { raw = "\"S\\xf8rmirb\\xe6ren\"", want = "Sørmirbæren", file = "valid/string/hex-escape.toml" }
+    , { raw = "'\\x20 \\x09 \\x0d\\x0a'", want = "\\x20 \\x09 \\x0d\\x0a", file = "valid/string/hex-escape.toml" }
+    , { raw = "\"\"\"\n\\x20 \\x09 \\x1b \\x0d\\x0a\n\\x7f\n\\x00\n\\x68\\x65\\x6c\\x6c\\x6f\\x0a\n\\x53\\xF8\\x72\\x6D\\x69\\x72\\x62\\xE6\\x72\\x65\\x6E\n\"\"\"", want = "  \t \u{001b} \r\n\n\u{007f}\n\u{0000}\nhello\n\nSørmirbæren\n", file = "valid/string/hex-escape.toml" }
+    , { raw = "'''\n\\x20 \\x09 \\x0d\\x0a\n'''", want = "\\x20 \\x09 \\x0d\\x0a\n", file = "valid/string/hex-escape.toml" }
+    , { raw = "\"\\x00\"", want = "\u{0000}", file = "valid/string/hex-escape.toml" }
+    , { raw = "\"\\x20 \\x09 \\x1b \\x0d\\x0a\"", want = "  \t \u{001b} \r\n", file = "valid/string/hex-escape.toml" }
+    , { raw = "\"\\u0251 \\u20ac \\U00010AF1 \\u0251\\u20ac\\U00010AF1\"", want = "ɑ € 𐫱 ɑ€𐫱", file = "valid/string/multibyte-escape.toml" }
+    , { raw = "\"\"\"\\u0251 \\u20ac \\U00010AF1 \\u0251\\u20ac\\U00010AF1\"\"\"", want = "ɑ € 𐫱 ɑ€𐫱", file = "valid/string/multibyte-escape.toml" }
+    , { raw = "\"\\U00000251 \\U000020ac \\U00010AF1 \\U00000251\\U000020ac\\U00010AF1\"", want = "ɑ € 𐫱 ɑ€𐫱", file = "valid/string/multibyte-escape.toml" }
+    , { raw = "\"\"\"\\U00000251 \\U000020ac \\U00010AF1 \\U00000251\\U000020ac\\U00010AF1\"\"\"", want = "ɑ € 𐫱 ɑ€𐫱", file = "valid/string/multibyte-escape.toml" }
+    , { raw = "\"ɑ € 𐫱 ɑ€𐫱\"", want = "ɑ € 𐫱 ɑ€𐫱", file = "valid/string/multibyte.toml" }
+    , { raw = "\"\"\"ɑ € 𐫱 ɑ€𐫱\"\"\"", want = "ɑ € 𐫱 ɑ€𐫱", file = "valid/string/multibyte.toml" }
+    , { raw = "'''ɑ € 𐫱 ɑ€𐫱'''", want = "ɑ € 𐫱 ɑ€𐫱", file = "valid/string/multibyte.toml" }
+    , { raw = "'ɑ € 𐫱 ɑ€𐫱'", want = "ɑ € 𐫱 ɑ€𐫱", file = "valid/string/multibyte.toml" }
+    , { raw = "\"\"\"\"\"\"", want = "", file = "valid/string/multiline-empty.toml" }
+    , { raw = "\"\"\"\n\"\"\"", want = "", file = "valid/string/multiline-empty.toml" }
+    , { raw = "\"\"\"\\\n    \"\"\"", want = "", file = "valid/string/multiline-empty.toml" }
+    , { raw = "\"\"\"\\\n   \\\n   \\  \n   \"\"\"", want = "", file = "valid/string/multiline-empty.toml" }
+    , { raw = "\"\"\"\\\n\"\"\"", want = "", file = "valid/string/multiline-escaped-crlf.toml" }
+    , { raw = "\"\"\"lol\\\"\"\"\"\"\"", want = "lol\"\"\"", file = "valid/string/multiline-quotes.toml" }
+    , { raw = "\"\"\"\nClosing with five quotes\n\"\"\"\"\"", want = "Closing with five quotes\n\"\"", file = "valid/string/multiline-quotes.toml" }
+    , { raw = "\"\"\"\nClosing with four quotes\n\"\"\"\"", want = "Closing with four quotes\n\"", file = "valid/string/multiline-quotes.toml" }
+    , { raw = "''''one quote''''", want = "'one quote'", file = "valid/string/multiline-quotes.toml" }
+    , { raw = "''' 'one quote' '''", want = " 'one quote' ", file = "valid/string/multiline-quotes.toml" }
+    , { raw = "'''''two quotes'''''", want = "''two quotes''", file = "valid/string/multiline-quotes.toml" }
+    , { raw = "''' ''two quotes'' '''", want = " ''two quotes'' ", file = "valid/string/multiline-quotes.toml" }
+    , { raw = "\"\"\"aaa'''bbb\"\"\"", want = "aaa'''bbb", file = "valid/string/multiline-quotes.toml" }
+    , { raw = "'''aaa\"\"\"bbb'''", want = "aaa\"\"\"bbb", file = "valid/string/multiline-quotes.toml" }
+    , { raw = "\"\"\"\"one quote\"\"\"\"", want = "\"one quote\"", file = "valid/string/multiline-quotes.toml" }
+    , { raw = "\"\"\" \"one quote\" \"\"\"", want = " \"one quote\" ", file = "valid/string/multiline-quotes.toml" }
+    , { raw = "\"\"\"\"\"two quotes\"\"\"\"\"", want = "\"\"two quotes\"\"", file = "valid/string/multiline-quotes.toml" }
+    , { raw = "\"\"\" \"\"two quotes\"\" \"\"\"", want = " \"\"two quotes\"\" ", file = "valid/string/multiline-quotes.toml" }
+    , { raw = "\"The quick brown fox jumps over the lazy dog.\"", want = "The quick brown fox jumps over the lazy dog.", file = "valid/string/multiline.toml" }
+    , { raw = "\"\"\"\\\n       The quick brown \\\n       fox jumps over \\\n       the lazy dog.\\\n       \"\"\"", want = "The quick brown fox jumps over the lazy dog.", file = "valid/string/multiline.toml" }
+    , { raw = "\"\"\"\nThe quick brown \\\n\n\n  fox jumps over \\\n    the lazy dog.\"\"\"", want = "The quick brown fox jumps over the lazy dog.", file = "valid/string/multiline.toml" }
+    , { raw = "\"\"\"a \\\\\nb\"\"\"", want = "a \\\nb", file = "valid/string/multiline.toml" }
+    , { raw = "\"\"\"a \\\\\\\nb\"\"\"", want = "a \\b", file = "valid/string/multiline.toml" }
+    , { raw = "\"\"\"a \\\\\\\\\n  b\"\"\"", want = "a \\\\\n  b", file = "valid/string/multiline.toml" }
+    , { raw = "\"\"\"a   \t\\\n   b\"\"\"", want = "a   \tb", file = "valid/string/multiline.toml" }
+    , { raw = "\"\"\"a\\\n    b\"\"\"", want = "ab", file = "valid/string/multiline.toml" }
+    , { raw = "\"\"\"\\\n       The quick brown \\\n       fox jumps over \\   \n       the lazy dog.\\\t\n       \"\"\"", want = "The quick brown fox jumps over the lazy dog.", file = "valid/string/multiline.toml" }
+    , { raw = "'''value\\n'''", want = "value\\n", file = "valid/string/nl.toml" }
+    , { raw = "'val\\nue'", want = "val\\nue", file = "valid/string/nl.toml" }
+    , { raw = "'val\\ue'", want = "val\\ue", file = "valid/string/nl.toml" }
+    , { raw = "\"\"\"value\\n\"\"\"", want = "value\n", file = "valid/string/nl.toml" }
+    , { raw = "\"val\\nue\"", want = "val\nue", file = "valid/string/nl.toml" }
+    , { raw = "\"~  ÿ ퟿  ￿ 𐀀 􏿿\"", want = "~  ÿ ퟿  ￿ 𐀀 􏿿", file = "valid/string/quoted-unicode.toml" }
+    , { raw = "\"\\u0000 \\u0008 \\u000c \\U00000041 \\u007f \\u0080 \\u00ff \\ud7ff \\ue000 \\uffff \\U00010000 \\U0010ffff\"", want = "\u{0000} \u{0008} \u{000c} A \u{007f}  ÿ ퟿  ￿ 𐀀 􏿿", file = "valid/string/quoted-unicode.toml" }
+    , { raw = "'~  ÿ ퟿  ￿ 𐀀 􏿿'", want = "~  ÿ ퟿  ￿ 𐀀 􏿿", file = "valid/string/quoted-unicode.toml" }
+    , { raw = "'\\u0000 \\u0008 \\u000c \\U00000041 \\u007f \\u0080 \\u00ff \\ud7ff \\ue000 \\uffff \\U00010000 \\U0010ffff'", want = "\\u0000 \\u0008 \\u000c \\U00000041 \\u007f \\u0080 \\u00ff \\ud7ff \\ue000 \\uffff \\U00010000 \\U0010ffff", file = "valid/string/quoted-unicode.toml" }
+    , { raw = "''", want = "", file = "valid/string/raw-empty.toml" }
+    , { raw = "'''\nThis string has a ' quote character.'''", want = "This string has a ' quote character.", file = "valid/string/raw-multiline.toml" }
+    , { raw = "'''\nThis string\nhas ' a quote character\nand more than\none newline\nin it.'''", want = "This string\nhas ' a quote character\nand more than\none newline\nin it.", file = "valid/string/raw-multiline.toml" }
+    , { raw = "'''First line\n\t Followed by a tab'''", want = "First line\n\t Followed by a tab", file = "valid/string/raw-multiline.toml" }
+    , { raw = "'''This string has a ' quote character.'''", want = "This string has a ' quote character.", file = "valid/string/raw-multiline.toml" }
+    , { raw = "'''' there's one already\n'' two more\n'''''", want = "' there's one already\n'' two more\n''", file = "valid/string/raw-multiline.toml" }
+    , { raw = "'This string has a \\\\ backslash character.'", want = "This string has a \\\\ backslash character.", file = "valid/string/raw.toml" }
+    , { raw = "'This string has a \\b backspace character.'", want = "This string has a \\b backspace character.", file = "valid/string/raw.toml" }
+    , { raw = "'This string has a \\r carriage return character.'", want = "This string has a \\r carriage return character.", file = "valid/string/raw.toml" }
+    , { raw = "'This string has a \\f form feed character.'", want = "This string has a \\f form feed character.", file = "valid/string/raw.toml" }
+    , { raw = "'This string has a \\n new line character.'", want = "This string has a \\n new line character.", file = "valid/string/raw.toml" }
+    , { raw = "'This string has a \\/ slash character.'", want = "This string has a \\/ slash character.", file = "valid/string/raw.toml" }
+    , { raw = "'This string has a \\t tab character.'", want = "This string has a \\t tab character.", file = "valid/string/raw.toml" }
+    , { raw = "'This string has an \t unescaped tab character.'", want = "This string has an \t unescaped tab character.", file = "valid/string/raw.toml" }
+    , { raw = "\"You are not drinking enough whisky.\"", want = "You are not drinking enough whisky.", file = "valid/string/simple.toml" }
+    , { raw = "\"§\"", want = "§", file = "valid/string/start-mb.toml" }
+    , { raw = "'§'", want = "§", file = "valid/string/start-mb.toml" }
+    , { raw = "\"\"\"\\\n§\"\"\"", want = "§", file = "valid/string/start-mb.toml" }
+    , { raw = "\"\"\"\n§\"\"\"", want = "§", file = "valid/string/start-mb.toml" }
+    , { raw = "\"\"\"§\"\"\"", want = "§", file = "valid/string/start-mb.toml" }
+    , { raw = "'''\n§'''", want = "§", file = "valid/string/start-mb.toml" }
+    , { raw = "'''§'''", want = "§", file = "valid/string/start-mb.toml" }
+    , { raw = "\"\\u0061\"", want = "a", file = "valid/string/unicode-escape.toml" }
+    , { raw = "\"\\u0062\"", want = "b", file = "valid/string/unicode-escape.toml" }
+    , { raw = "\"\\U00000063\"", want = "c", file = "valid/string/unicode-escape.toml" }
+    , { raw = "\"\\u03B4\"", want = "δ", file = "valid/string/unicode-escape.toml" }
+    , { raw = "\"\\U000003B4\"", want = "δ", file = "valid/string/unicode-escape.toml" }
+    , { raw = "\"\"\"\\u0061\"\"\"", want = "a", file = "valid/string/unicode-escape.toml" }
+    , { raw = "\"\"\"\\u0062\"\"\"", want = "b", file = "valid/string/unicode-escape.toml" }
+    , { raw = "\"\"\"\\U00000063\"\"\"", want = "c", file = "valid/string/unicode-escape.toml" }
+    , { raw = "\"\"\"\\u03B4\"\"\"", want = "δ", file = "valid/string/unicode-escape.toml" }
+    , { raw = "\"\"\"\\U000003B4\"\"\"", want = "δ", file = "valid/string/unicode-escape.toml" }
+    , { raw = "\"\"\"\\u0000\"\"\"", want = "\u{0000}", file = "valid/string/unicode-escape.toml" }
+    , { raw = "\"\"\"\\U00000000\"\"\"", want = "\u{0000}", file = "valid/string/unicode-escape.toml" }
+    , { raw = "\"\\u0000\"", want = "\u{0000}", file = "valid/string/unicode-escape.toml" }
+    , { raw = "\"\\U00000000\"", want = "\u{0000}", file = "valid/string/unicode-escape.toml" }
+    , { raw = "\"We see no # comments here.\"", want = "We see no # comments here.", file = "valid/string/with-pound.toml" }
+    , { raw = "\"But there are # some comments here.\"", want = "But there are # some comments here.", file = "valid/string/with-pound.toml" }
+    , { raw = "\"leading\"", want = "leading", file = "valid/key/alphanum.toml" }
+    , { raw = "\"false float\"", want = "false float", file = "valid/key/alphanum.toml" }
+    , { raw = "\"num\"", want = "num", file = "valid/key/alphanum.toml" }
+    , { raw = "\"a\"", want = "a", file = "valid/key/alphanum.toml" }
+    , { raw = "\"mixed\"", want = "mixed", file = "valid/key/alphanum.toml" }
+    , { raw = "\"___\"", want = "___", file = "valid/key/alphanum.toml" }
+    , { raw = "\"dashed\"", want = "dashed", file = "valid/key/alphanum.toml" }
+    , { raw = "\"NN\"", want = "NN", file = "valid/key/case-sensitive.toml" }
+    , { raw = "\"blank\"", want = "blank", file = "valid/key/empty-01.toml" }
+    , { raw = "\"blank\"", want = "blank", file = "valid/key/empty-02.toml" }
+    , { raw = "'zero one'", want = "zero one", file = "valid/key/numeric-08.toml" }
+    , { raw = "'one'", want = "one", file = "valid/key/numeric-08.toml" }
+    , { raw = "\"different key\"", want = "different key", file = "valid/key/quoted-unicode.toml" }
+    , { raw = "\"literal key\"", want = "literal key", file = "valid/key/quoted-unicode.toml" }
+    , { raw = "\"basic key\"", want = "basic key", file = "valid/key/quoted-unicode.toml" }
+    , { raw = "\"ceci n'est pas un nombre\"", want = "ceci n'est pas un nombre", file = "valid/key/special-word.toml" }
+    ]
+
+
+bad : Array Bad
+bad =
+    [ { raw = "\"\\xAg\"", file = "invalid/string/bad-byte-escape.toml" }
+    , { raw = "\"This string has a bad \\a escape character.\"", file = "invalid/string/bad-escape-01.toml" }
+    , { raw = "\"This string has a bad \\  escape character.\"", file = "invalid/string/bad-escape-02.toml" }
+    , { raw = "\"a \\\\\\ b\"", file = "invalid/string/bad-escape-04.toml" }
+    , { raw = "\"a \\\\\\\\\\ b\"", file = "invalid/string/bad-escape-05.toml" }
+    , { raw = "\"\\x0g\"", file = "invalid/string/bad-hex-esc-01.toml" }
+    , { raw = "\"\\xG0\"", file = "invalid/string/bad-hex-esc-02.toml" }
+    , { raw = "\"\\x\"", file = "invalid/string/bad-hex-esc-03.toml" }
+    , { raw = "\"\\x 50\"", file = "invalid/string/bad-hex-esc-04.toml" }
+    , { raw = "\"\\x 50\"", file = "invalid/string/bad-hex-esc-05.toml" }
+    , { raw = "\"This string has a bad \\/ escape character.\"", file = "invalid/string/bad-slash-escape.toml" }
+    , { raw = "\"val\\ue\"", file = "invalid/string/bad-uni-esc-01.toml" }
+    , { raw = "\"val\\Ux\"", file = "invalid/string/bad-uni-esc-02.toml" }
+    , { raw = "\"val\\U0000000\"", file = "invalid/string/bad-uni-esc-03.toml" }
+    , { raw = "\"val\\U0000\"", file = "invalid/string/bad-uni-esc-04.toml" }
+    , { raw = "\"val\\Ugggggggg\"", file = "invalid/string/bad-uni-esc-05.toml" }
+    , { raw = "\"This string contains a non scalar unicode codepoint \\uD801\"", file = "invalid/string/bad-uni-esc-06.toml" }
+    , { raw = "\"\\uabag\"", file = "invalid/string/bad-uni-esc-07.toml" }
+    , { raw = "\"\"\"val\\ue\"\"\"", file = "invalid/string/bad-uni-esc-ml-01.toml" }
+    , { raw = "\"\"\"val\\Ux\"\"\"", file = "invalid/string/bad-uni-esc-ml-02.toml" }
+    , { raw = "\"\"\"val\\U0000000\"\"\"", file = "invalid/string/bad-uni-esc-ml-03.toml" }
+    , { raw = "\"\"\"val\\U0000\"\"\"", file = "invalid/string/bad-uni-esc-ml-04.toml" }
+    , { raw = "\"\"\"val\\Ugggggggg\"\"\"", file = "invalid/string/bad-uni-esc-ml-05.toml" }
+    , { raw = "\"\"\"This string contains a non scalar unicode codepoint \\uD801\"\"\"", file = "invalid/string/bad-uni-esc-ml-06.toml" }
+    , { raw = "\"\"\"\\uabag\"\"\"", file = "invalid/string/bad-uni-esc-ml-07.toml" }
+    , { raw = "\"\"\"\\UFFFFFFFF\"\"\"", file = "invalid/string/basic-multiline-out-of-range-unicode-escape-01.toml" }
+    , { raw = "\"\"\"\\U00D80000\"\"\"", file = "invalid/string/basic-multiline-out-of-range-unicode-escape-02.toml" }
+    , { raw = "\"\"\"\\@\"\"\"", file = "invalid/string/basic-multiline-unknown-escape.toml" }
+    , { raw = "\"\\UFFFFFFFF\"", file = "invalid/string/basic-out-of-range-unicode-escape-01.toml" }
+    , { raw = "\"\\U00D80000\"", file = "invalid/string/basic-out-of-range-unicode-escape-02.toml" }
+    , { raw = "\"\\@\"", file = "invalid/string/basic-unknown-escape.toml" }
+    , { raw = "\"\"\"t\\a\"\"\"", file = "invalid/string/multiline-bad-escape-01.toml" }
+    , { raw = "\"\"\"\n  foo \\ \\n\n  bar\"\"\"", file = "invalid/string/multiline-escape-space-01.toml" }
+    , { raw = "\"\"\"\nhee \\\n\ngee \\   \"\"\"", file = "invalid/string/multiline-escape-space-02.toml" }
+    ]
+
+
+{-| -}
+literalsSuite : U.Suite
+literalsSuite =
+    U.suite
+        { name = "Literals"
+        , setUpSuite = U.noSuiteFixture
+        , tearDownSuite = U.noTearDown
+        , setUp = \_ -> Task.succeed {}
+        , tearDown = U.noTearDown
+        , tests =
+            -- A generated table that came out empty would pass everything
+            -- below it without checking anything.
+            [ U.test "the tables are the size toml-test says they are" <| \_ ->
+                Task.succeed
+                    (Expect.equal { good = 133, bad = 34 }
+                        { good = Array.length good, bad = Array.length bad }
+                    )
+            , U.test "every literal toml-test accepts reads as the expected string" <| \_ ->
+                Task.succeed
+                    (Expect.equal []
+                        (good
+                            |> Array.keepIf (\row -> Strings.value row.raw /= Just row.want)
+                            |> Array.map
+                                (\row ->
+                                    row.file
+                                        ++ ": "
+                                        ++ row.raw
+                                        ++ " -> "
+                                        ++ describe (Strings.value row.raw)
+                                        ++ ", wanted "
+                                        ++ row.want
+                                )
+                        )
+                    )
+            , U.test "and every one it rejects reads as nothing" <| \_ ->
+                Task.succeed
+                    (Expect.equal []
+                        (bad
+                            |> Array.keepIf (\row -> Strings.value row.raw /= Nothing)
+                            |> Array.map (\row -> row.file ++ ": " ++ row.raw)
+                        )
+                    )
+            ]
+        }
+
+
+describe : Maybe String -> String
+describe result =
+    when result is
+        Just text ->
+            text
+
+        Nothing ->
+            "nothing"
