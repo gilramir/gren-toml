@@ -1,0 +1,239 @@
+module FromTaggedJson exposing (decode)
+
+{-| The other direction: `toml-test`'s tagged JSON back into TOML.
+
+Reading it is a little more delicate than writing it, for two reasons.
+
+**Telling a scalar from a table.** A scalar is an object of exactly two string
+fields named `type` and `value`. So is a table with two string-valued keys
+called `type` and `value`, and nothing in the format distinguishes them.
+`toml-test`'s own reader uses the size-and-names test and so does this; a
+document that manages to be ambiguous under it is ambiguous for the official
+runner too.
+
+**Every value is a string.** That is what keeps `9223372036854775807` intact
+through a JSON reader, and it means the `type` tag is the only thing that says
+how to read the string back. `gren-toml`'s own readers do the reading, which is
+the point: the same code that parses `1979-05-27T07:32:00Z` out of a TOML file
+parses it out of here.
+
+@docs decode
+
+-}
+
+import Array exposing (Array)
+import Basics exposing (..)
+import BigDecimal
+import BigInt
+import Civil.Date as Date
+import Civil.DateTime as DateTime
+import Civil.Time as CivilTime
+import Dict exposing (Dict)
+import Json.Decode as Decode
+import Maybe exposing (Maybe(..))
+import Result exposing (Result(..))
+import String
+import Toml.Encode as Encode exposing (Field)
+
+
+{-| The fields of a whole document, or why the JSON was not one.
+-}
+decode : String -> Result String (Array Field)
+decode source =
+    Decode.decodeString document source
+        |> Result.mapError Decode.errorToString
+        |> Result.andThen identity
+
+
+document : Decode.Decoder (Result String (Array Field))
+document =
+    Decode.map asFields (Decode.dict json)
+
+
+{-| The JSON, before anything has been decided about what it means.
+-}
+type Json
+    = JsonTable (Dict String Json)
+    | JsonArray (Array Json)
+    | JsonScalar { kind : String, text : String }
+
+
+json : Decode.Decoder Json
+json =
+    Decode.oneOf
+        [ Decode.array (Decode.lazy (\_ -> json)) |> Decode.map JsonArray
+        , scalar
+        , Decode.dict (Decode.lazy (\_ -> json)) |> Decode.map JsonTable
+        ]
+
+
+scalar : Decode.Decoder Json
+scalar =
+    Decode.dict Decode.string
+        |> Decode.andThen
+            (\fields ->
+                when
+                    { size = Dict.count fields
+                    , kind = Dict.get "type" fields
+                    , text = Dict.get "value" fields
+                    }
+                is
+                    { size = 2, kind = Just kind, text = Just text } ->
+                        Decode.succeed (JsonScalar { kind = kind, text = text })
+
+                    _ ->
+                        Decode.fail "not a scalar"
+            )
+
+
+-- INTO SOMETHING TOML.ENCODE WILL WRITE
+
+
+asFields : Dict String Json -> Result String (Array Field)
+asFields fields =
+    Dict.foldl
+        (\name content soFar ->
+            Result.map2 Array.pushLast
+                (Result.map (Encode.field name) (asValue content))
+                soFar
+        )
+        (Ok [])
+        fields
+
+
+asValue : Json -> Result String Encode.Value
+asValue content =
+    when content is
+        JsonTable fields ->
+            Result.map Encode.table (asFields fields)
+
+        JsonArray items ->
+            asArray items
+
+        JsonScalar found ->
+            asScalar found
+
+
+{-| An array of nothing but tables becomes `[[header]]` sections, which is the
+readable spelling and the one worth exercising. Anything else -- a mixed array,
+or an empty one -- has to stay between brackets.
+
+The empty case is not a nicety: an array of tables with no items would write no
+lines at all, and the key would vanish from the file.
+
+-}
+asArray : Array Json -> Result String Encode.Value
+asArray items =
+    let
+        tables =
+            Array.mapAndKeepJust
+                (\item ->
+                    when item is
+                        JsonTable fields ->
+                            Just fields
+
+                        _ ->
+                            Nothing
+                )
+                items
+    in
+    if Array.length items > 0 && Array.length tables == Array.length items then
+        Array.foldl
+            (\fields soFar -> Result.map2 Array.pushLast (asFields fields) soFar)
+            (Ok [])
+            tables
+            |> Result.map Encode.tableArray
+
+    else
+        Array.foldl
+            (\item soFar -> Result.map2 Array.pushLast (asValue item) soFar)
+            (Ok [])
+            items
+            |> Result.map Encode.array
+
+
+{-| The `type` tag says which reader to use, and the readers are `gren-toml`'s
+own -- the same ones that read these spellings out of a TOML file.
+-}
+asScalar : { kind : String, text : String } -> Result String Encode.Value
+asScalar found =
+    when found.kind is
+        "string" ->
+            Ok (Encode.string found.text)
+
+        "bool" ->
+            when found.text is
+                "true" ->
+                    Ok (Encode.bool True)
+
+                "false" ->
+                    Ok (Encode.bool False)
+
+                _ ->
+                    unreadable found
+
+        "integer" ->
+            read found (Maybe.map Encode.bigInt (BigInt.fromString found.text))
+
+        "float" ->
+            asFloat found
+
+        "datetime" ->
+            read found (Maybe.map Encode.offsetDateTime (DateTime.fromString found.text))
+
+        "datetime-local" ->
+            read found (Maybe.map Encode.localDateTime (DateTime.fromString found.text))
+
+        "date-local" ->
+            read found (Maybe.map Encode.localDate (Date.fromString found.text))
+
+        "time-local" ->
+            read found (Maybe.map Encode.localTime (CivilTime.fromString found.text))
+
+        other ->
+            Err ("unknown type tag " ++ other)
+
+
+{-| `inf`, `-inf` and `nan` are words rather than numbers and are not
+`BigDecimal` values. Everything else is read exactly, so a float that came
+through JSON as `9007199254740993` is written back as that and not as the
+nearest double to it.
+-}
+asFloat : { kind : String, text : String } -> Result String Encode.Value
+asFloat found =
+    when found.text is
+        "inf" ->
+            Ok (Encode.float (1 / 0))
+
+        "+inf" ->
+            Ok (Encode.float (1 / 0))
+
+        "-inf" ->
+            Ok (Encode.float (-1 / 0))
+
+        "nan" ->
+            Ok (Encode.float (0 / 0))
+
+        "-nan" ->
+            Ok (Encode.float (0 / 0))
+
+        "+nan" ->
+            Ok (Encode.float (0 / 0))
+
+        text ->
+            read found (Maybe.map Encode.bigDecimal (BigDecimal.fromString text))
+
+
+read : { kind : String, text : String } -> Maybe Encode.Value -> Result String Encode.Value
+read found parsed =
+    when parsed is
+        Just content ->
+            Ok content
+
+        Nothing ->
+            unreadable found
+
+
+unreadable : { kind : String, text : String } -> Result String Encode.Value
+unreadable found =
+    Err ("not a valid " ++ found.kind ++ ": " ++ found.text)

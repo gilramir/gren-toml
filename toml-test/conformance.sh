@@ -1,5 +1,5 @@
 #!/bin/bash
-# Run the official toml-test suite against the decoder.
+# Run the official toml-test suite against both interfaces.
 #
 # The runner embeds its own copy of the test files, so this checks gren-toml
 # against the corpus as it was released rather than against ../vendor/toml-test,
@@ -17,4 +17,7 @@ if [ ! -x "$BIN" ]; then
     GOBIN="$PWD/.bin" go install "github.com/toml-lang/toml-test/v2/cmd/toml-test@$VERSION"
 fi
 
-exec "$BIN" test -toml=1.1.0 -decoder="$PWD/gren-toml-decoder" "$@"
+exec "$BIN" test -toml=1.1.0 \
+    -decoder="$PWD/gren-toml-decode" \
+    -encoder="$PWD/gren-toml-encode" \
+    "$@"

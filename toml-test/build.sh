@@ -1,14 +1,17 @@
 #!/bin/bash
-# Build the decoder into a runnable script.
+# Build the two toml-test interfaces into runnable scripts.
 #
-# `gren make Main` (no --output) produces a self-running executable, which is
-# what toml-test wants to exec. The wrapper exists so the thing toml-test is
-# handed is a single path with no `node` in front of it.
+# `gren make Main` (no --output) produces a self-running executable. The two
+# wrappers exist because what toml-test wants handed to -decoder and -encoder is
+# a path it can execute, not a command line with a subcommand in it.
 set -e
 cd "$(dirname "$0")"
 gren make Main >/dev/null
-cat > gren-toml-decoder <<'WRAPPER'
+
+for word in decode encode; do
+    cat > "gren-toml-$word" <<WRAPPER
 #!/bin/sh
-exec node "$(dirname "$0")/app" "$@"
+exec node "\$(dirname "\$0")/app" $word "\$@"
 WRAPPER
-chmod +x gren-toml-decoder
+    chmod +x "gren-toml-$word"
+done

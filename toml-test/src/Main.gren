@@ -1,23 +1,24 @@
 module Main exposing (main)
 
-{-| `gren-toml-decoder`: the `toml-test` decoder interface for `gren-toml`.
+{-| The `toml-test` interfaces for `gren-toml`, both directions.
 
-The contract the official runner expects, and all of it:
+    gren-toml-test decode   # TOML on stdin, tagged JSON on stdout
+    gren-toml-test encode   # tagged JSON on stdin, TOML on stdout
 
-  - TOML arrives on stdin.
-  - If it is valid, write the tagged JSON encoding of it to stdout and exit 0.
-  - If it is not, write something to stderr and exit non-zero.
+Either way the contract is the same shape: read all of stdin, write the
+converted form to stdout and exit 0, or write something to stderr and exit
+non-zero. `build.sh` wraps each subcommand in a script of its own, since what
+`toml-test` wants handed to `-decoder` and `-encoder` is a path it can execute.
 
-Which is to say this program is plumbing. Everything it could get wrong about
-TOML is in `gren-toml`, and everything it could get wrong about the JSON is in
-`TaggedJson`. What is left here is reading stdin as bytes rather than as text --
-which matters, because nine of the suite's invalid files are invalid precisely
-because they are not UTF-8, and a decoder that reads a `String` has already lost
-them.
+These programs are plumbing. Everything they could get wrong about TOML is in
+`gren-toml`, and everything they could get wrong about the JSON is in
+`TaggedJson` and `FromTaggedJson`.
 
-The whole stream is collected before anything is decoded, for the same reason: a
-multi-byte sequence split across a chunk boundary would look like an encoding
-error to an incremental decode.
+What is genuinely their own business is reading stdin as **bytes** rather than
+as text, and reading all of it before decoding any. Nine of the suite's invalid
+files are invalid precisely because they are not UTF-8, so a decoder that reads
+a string has already lost them; and a character whose bytes straddle a chunk
+boundary would look like an encoding error to an incremental decode.
 
 -}
 
@@ -26,55 +27,84 @@ import Argparse.PrettyPrinter as PP
 import Argparse.Program as Program
 import Array exposing (Array)
 import Bytes exposing (Bytes)
+import FromTaggedJson
 import Node
 import Result exposing (Result(..))
 import Stream
 import TaggedJson
 import Task exposing (Task)
 import Toml
+import Toml.Encode as Encode
 import Toml.Table as Table
 
 
 type Cmd
     = Decode
+    | Encode
 
 
-{-| The tool takes no arguments at all. It is still declared this way so that
-`--help` and `--version` work and read like every other tool here.
--}
-command : AP.Command {} {} Cmd
-command =
-    { word = ""
-    , arguments = AP.noArgs
-    , flags = AP.noFlags
-    , commonDescription = Nothing
-    , summary = "Read TOML on stdin and write toml-test's tagged JSON on stdout"
-    , example = PP.empty
-    , builder = \_ _ -> Decode
+parser : AP.App Cmd
+parser =
+    { name = "gren-toml-test"
+    , version = "1.0.0"
+    , commands =
+        AP.defineGroup
+            |> AP.withCommand
+                { word = "decode"
+                , arguments = AP.noArgs
+                , flags = AP.noFlags
+                , commonDescription = Just "TOML in, toml-test's tagged JSON out."
+                , summary = "Read TOML on stdin and write the tagged JSON description on stdout."
+                , example = PP.words "gren-toml-test decode < some.toml"
+                , builder = \_ _ -> Decode
+                }
+            |> AP.withCommand
+                { word = "encode"
+                , arguments = AP.noArgs
+                , flags = AP.noFlags
+                , commonDescription = Just "toml-test's tagged JSON in, TOML out."
+                , summary = "Read the tagged JSON on stdin and write TOML on stdout."
+                , example = PP.words "gren-toml-test encode < some.json"
+                , builder = \_ _ -> Encode
+                }
+    , intro = PP.words "The toml-test decoder and encoder interfaces for gren-toml."
+    , outro = PP.empty
     }
 
 
 main : Node.SimpleProgram a
 main =
-    Program.runRoot
-        { name = "gren-toml-decoder"
-        , version = "1.0.0"
-        , command = command
-        , onCommand = \env _ -> decode env
+    Program.run
+        { parser = parser
+        , onCommand =
+            \env command ->
+                when command is
+                    Decode ->
+                        convert env decodeToml
+
+                    Encode ->
+                        convert env encodeToml
         }
 
 
-decode : Node.Environment -> Task Program.Failure {}
-decode env =
+{-| Both subcommands are the same program with a different function in the
+middle: all of stdin, through a conversion that may fail, out to stdout.
+
+The conversion produces the exact bytes to write, trailing newline included, so
+that neither direction ends up with one more or one fewer than it meant to.
+
+-}
+convert : Node.Environment -> (Bytes -> Result String String) -> Task Program.Failure {}
+convert env change =
     readAll env.stdin
         |> Task.andThen
             (\source ->
-                when read source is
+                when change source is
                     Err message ->
                         Task.fail (Program.ExitMessage message)
 
-                    Ok json ->
-                        Stream.writeLineAsBytes json env.stdout
+                    Ok written ->
+                        Stream.writeStringAsBytes written env.stdout
                             |> Task.map (\_ -> {})
                             |> Task.onError
                                 (\error ->
@@ -84,8 +114,8 @@ decode env =
             )
 
 
-read : Bytes -> Result String String
-read source =
+decodeToml : Bytes -> Result String String
+decodeToml source =
     when Toml.parseBytes source is
         Err error ->
             Err (Toml.errorToString error)
@@ -96,15 +126,25 @@ read source =
                     Err (Table.errorToString error)
 
                 Ok table ->
-                    Ok (TaggedJson.encode table)
+                    Ok (TaggedJson.encode table ++ "\n")
+
+
+{-| JSON is text by definition, so this direction may decode first and ask
+questions after -- unlike the other one, where whether the bytes are UTF-8 at all
+is part of what is being tested.
+-}
+encodeToml : Bytes -> Result String String
+encodeToml source =
+    when Bytes.toString source is
+        Nothing ->
+            Err "the input is not valid UTF-8"
+
+        Just text ->
+            FromTaggedJson.decode text
+                |> Result.map Encode.toString
 
 
 {-| Every byte of stdin, in one `Bytes`.
-
-Not decoded chunk by chunk: a character whose bytes straddle a chunk boundary
-would be reported as invalid UTF-8, and this program's whole job is to be right
-about which files are invalid.
-
 -}
 readAll : Stream.Readable Bytes -> Task Program.Failure Bytes
 readAll stdin =
