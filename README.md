@@ -148,28 +148,74 @@ reward for being valid.
 ## Tests
 
 ```sh
-git clone --recurse-submodules <this repo>
-git clone <gren-civil-time>          # as a sibling directory
-
-devbox run test          # 71 checks over the corpus, ~0.8s, no network
+devbox run test          # 71 checks, ~0.8s, no network
 devbox run conformance   # the official toml-test runner; needs Go
 ```
 
-Until `gren-civil-time` is published, `gren.json` depends on it as
-`local:../gren-civil-time`, so the two have to sit side by side. That becomes a
-version range at publication, and this note goes away.
+### First, the two things that have to be beside the repo
 
-The corpus is `vendor/toml-test`, a submodule pinned to a particular commit. The
-pin is load-bearing rather than tidiness: the suites assert exact counts -- 220
-valid files, 485 invalid ones, 32 date-times -- so a floating checkout would turn
-an upstream addition into a local failure. In an existing clone,
-`git submodule update --init` fetches it.
+**The test corpus is a git submodule.** `vendor/toml-test` holds the 714 files
+the suite reads, and it is pinned to one commit — which is load-bearing rather
+than tidiness, because the suites assert exact counts (220 valid files, 485
+invalid ones, 32 date-times). A floating checkout would turn an upstream
+addition into a local failure.
 
-`toml-test/` is the official
-[toml-test](https://github.com/toml-lang/toml-test) decoder and encoder
-interface, in this repo so that the library and the thing that scores it move
-together. It depends on this package the way anyone else would, so it also
-proves the public API is enough to build a real consumer:
+```sh
+git clone --recurse-submodules <this repo>
+```
+
+**If you already cloned without `--recurse-submodules`**, `vendor/toml-test` is
+an empty directory and three of the eight suites cannot start:
+
+```
+=== SUITE ERRORS ===
+RoundTrip: setUpSuite: ENOENT: no such file or directory,
+           open '../vendor/toml-test/tests/files-toml-1.1.0'
+Semantics: setUpSuite: ...
+Values:    setUpSuite: ...
+
+FAILED — 63 passed, 0 failed, 11 errored
+```
+
+`0 failed, 11 errored` is the signature: nothing is wrong with the library,
+three suites just have nothing to read. Fix it in place, no re-clone needed:
+
+```sh
+git submodule update --init
+```
+
+**`gren-civil-time` has to be a sibling directory.** Until it is published,
+`gren.json` depends on it as `local:../gren-civil-time`, so `~/prj/gren-toml`
+and `~/prj/gren-civil-time` sit next to each other. Without it nothing compiles
+at all, and the error names the path it wanted:
+
+```
+The error is:
+
+    ENOENT: no such file or directory, lstat '/home/you/prj/gren-civil-time'
+```
+
+This becomes a version range at publication.
+
+### What the two commands check
+
+`devbox run test` runs `tests/`, which reads the corpus off the disk rather than
+from a baked-in fixture, so it follows the submodule rather than a snapshot of
+it. Eight suites, in ~0.8s and with no network:
+
+| suite | asks |
+|---|---|
+| `RoundTrip` | does every file come back from the writer byte for byte? |
+| `Semantics` | are exactly the right files accepted and rejected? |
+| `Values` | does each one read as the values `toml-test`'s own JSON says? |
+| `Numbers`, `Literals` | every number and string literal in the suite, in isolation |
+| `Decoding`, `Editing`, `Encoding` | the three APIs, hand-written |
+
+The first three are the ones that need the submodule.
+
+`devbox run conformance` shells into `toml-test/` and runs the **official Go
+runner** against both the decoder and encoder interfaces. It needs Go, and a
+network the first time to install the runner into `toml-test/.bin`:
 
 ```
   valid tests: 214 passed,  0 failed
@@ -177,10 +223,22 @@ encoder tests: 214 passed,  0 failed
 invalid tests: 467 passed,  0 failed
 ```
 
-The two runs check different things on purpose. `toml-test` embeds its own
-corpus and compares with the official Go implementation; `tests/` uses the newer
-vendored checkout, a comparator written independently in Gren, and additionally
-the byte-for-byte round trip, which `toml-test` has no notion of.
+The two runs are not redundant. `toml-test` embeds its own corpus and compares
+with the official Go implementation; `tests/` uses the newer pinned checkout, a
+comparator written independently in Gren, and the byte-for-byte round trip,
+which `toml-test` has no notion of. A bug has to fool two comparators about two
+snapshots to get through.
+
+### Regenerating the fixtures
+
+`tests/src/Numbers.gren` and `tests/src/Literals.gren` are generated from the
+corpus. Both reproduce their file byte for byte, so a diff after regenerating
+means the script and the file have drifted:
+
+```sh
+python3 tools/gen-numbers.py     # from the repo root
+python3 tools/gen-strings.py
+```
 
 ## License
 
