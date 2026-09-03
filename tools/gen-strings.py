@@ -20,7 +20,7 @@ import os
 import re
 import sys
 
-TESTS = "../vendor/toml-test/tests"
+TESTS = "vendor/toml-test/tests"
 # Valid cases come from both directories; invalid ones only from string/,
 # because invalid/key is largely about duplicate and conflicting keys, whose
 # literals are perfectly well formed and which this module has no opinion on.

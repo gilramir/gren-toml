@@ -18,7 +18,7 @@ import os
 import re
 import sys
 
-TESTS = "../vendor/toml-test/tests"
+TESTS = "vendor/toml-test/tests"
 DIRS = ["integer", "float"]
 KINDS = ("integer", "float")
 
@@ -85,7 +85,7 @@ def table(rows):
     return "\n".join(lines) + "\n"
 
 
-TEMPLATE = '''module Numbers exposing (numbersSuite)
+HEAD = """module Numbers exposing (numbersSuite)
 
 {-| Every integer and float in the official TOML test suite.
 
@@ -108,9 +108,9 @@ parser will try both.
 -}
 
 import Array exposing (Array)
+import Basics exposing (..)
 import BigDecimal
 import BigInt
-import Basics exposing (..)
 import Expect
 import Maybe exposing (Maybe(..))
 import String
@@ -130,13 +130,17 @@ type alias Bad =
 
 good : Array Good
 good =
-%s
+"""
 
+
+MID = """
 
 bad : Array Bad
 bad =
-%s
+"""
 
+
+TAIL = """
 
 {-| Whether the value read out of the text is the value the suite expects.
 Numerically: the expected string goes through the same reader.
@@ -200,17 +204,15 @@ numbersSuite =
                         (bad
                             |> Array.keepIf
                                 (\\row ->
-                                    Number.integer row.text
-                                        /= Nothing
-                                        || Number.float row.text
-                                        /= Nothing
+                                    Number.integer row.text /= Nothing
+                                        || Number.float row.text /= Nothing
                                 )
                             |> Array.map (\\row -> row.file ++ ": " ++ row.text)
                         )
                     )
             ]
         }
-'''
+"""
 
 
 def main():
@@ -227,9 +229,9 @@ def main():
     bad_rows = ['{ text = "%s", file = "%s" }' % (escape(text), path) for path, text in bad]
 
     with open("tests/src/Numbers.gren", "w") as out:
-        out.write(TEMPLATE % (len(good), len(bad),
-                              table(good_rows), table(bad_rows),
-                              len(good), len(bad)))
+        out.write(HEAD % (len(good), len(bad)) + table(good_rows)
+                  + MID + table(bad_rows)
+                  + (TAIL % (len(good), len(bad))))
     print("%d valid, %d invalid, %d lines skipped as not simple assignments"
           % (len(good), len(bad), skipped))
 

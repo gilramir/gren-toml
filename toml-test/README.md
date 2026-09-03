@@ -76,7 +76,7 @@ different things, on purpose:
 |  | corpus | comparator |
 | --- | --- | --- |
 | here | embedded in the released v2.2.0 runner | the official Go one |
-| `../tests` | `../../vendor/toml-test`, a newer checkout | written independently in Gren |
+| `../tests` | `../vendor/toml-test`, the pinned submodule | written independently in Gren |
 
 So a bug would have to fool two comparators about two snapshots to get through.
 The vendored corpus is the larger of the two — 220 valid and 494 invalid files

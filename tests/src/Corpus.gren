@@ -27,7 +27,7 @@ leaves the working directory.
 -}
 root : String
 root =
-    "../../vendor/toml-test/tests"
+    "../vendor/toml-test/tests"
 
 
 {-| One file of the suite.

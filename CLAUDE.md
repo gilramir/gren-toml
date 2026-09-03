@@ -130,7 +130,9 @@ one.
 
 `RoundTrip`, `Semantics` and `Values` read the corpus off the disk through
 `tests/src/Corpus.gren`, so they follow the vendored `toml-test` rather than a
-snapshot of it. They need `../../vendor/toml-test` to be checked out.
+snapshot of it. They read `../vendor/toml-test`, which is a submodule: clone
+with `--recurse-submodules`, or run `git submodule update --init` in an existing
+checkout, or the three corpus suites have nothing to read.
 
 `Values` compares against the suite's own `.json` the way the official runner
 does — numerically for numbers, semantically for date-times — rather than as

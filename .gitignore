@@ -1,0 +1,9 @@
+# gren build output
+.gren
+gren_packages/
+tests/app
+toml-test/app
+toml-test/gren-toml-decode
+toml-test/gren-toml-encode
+toml-test/.bin/
+*.swp

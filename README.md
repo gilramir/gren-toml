@@ -148,9 +148,17 @@ reward for being valid.
 ## Tests
 
 ```sh
-devbox run test          # 71 checks over the vendored corpus, ~0.8s, no network
+git clone --recurse-submodules <this repo>
+
+devbox run test          # 71 checks over the corpus, ~0.8s, no network
 devbox run conformance   # the official toml-test runner; needs Go
 ```
+
+The corpus is `vendor/toml-test`, a submodule pinned to a particular commit. The
+pin is load-bearing rather than tidiness: the suites assert exact counts -- 220
+valid files, 485 invalid ones, 32 date-times -- so a floating checkout would turn
+an upstream addition into a local failure. In an existing clone,
+`git submodule update --init` fetches it.
 
 `toml-test/` is the official
 [toml-test](https://github.com/toml-lang/toml-test) decoder and encoder

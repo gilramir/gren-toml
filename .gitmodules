@@ -1,0 +1,3 @@
+[submodule "vendor/toml-test"]
+	path = vendor/toml-test
+	url = https://github.com/toml-lang/toml-test.git

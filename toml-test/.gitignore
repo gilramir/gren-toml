@@ -1,7 +1,0 @@
-.gren
-gren_packages/
-app
-gren-toml-decode
-gren-toml-encode
-.bin/
-*.swp
