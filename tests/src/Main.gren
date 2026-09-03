@@ -14,6 +14,7 @@ Run with `./run.sh`.
 -}
 
 import Decoding exposing (decodingSuite)
+import Editing exposing (editingSuite)
 import FileSystem
 import Init
 import Literals exposing (literalsSuite)
@@ -41,6 +42,7 @@ main =
             \perms ->
                 [ numbersSuite
                 , decodingSuite
+                , editingSuite
                 , literalsSuite
                 , roundTripSuite perms
                 , semanticsSuite perms

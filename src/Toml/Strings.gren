@@ -1,6 +1,7 @@
 module Toml.Strings exposing
     ( Kind(..)
     , kindOf, delimiter, value
+    , escape, isBareKey
     , isBasicUnescaped, isLiteralChar, isNonAscii, isCommentChar
     )
 
@@ -36,6 +37,11 @@ A lone carriage return is still an error, in a string as everywhere else.
 @docs kindOf, delimiter, value
 
 
+## Writing
+
+@docs escape, isBareKey
+
+
 ## Character classes
 
 The grammar's, exported because the parser needs the same ones to know where a
@@ -47,6 +53,7 @@ literal ends and what a comment may contain.
 
 import Array exposing (Array)
 import Basics exposing (..)
+import BigInt
 import Char
 import Maybe exposing (Maybe(..))
 import String
@@ -596,3 +603,98 @@ quote =
 apostrophe : String
 apostrophe =
     "\u{0027}"
+
+
+
+-- WRITING
+
+
+{-| A basic-string literal, quotes included, for a string that has to be written
+into a file.
+
+    Toml.Strings.escape "a\tb"
+    --> "\"a\\tb\""
+
+Only what has to be escaped is escaped: the quote, the backslash, and the
+characters the grammar does not allow unescaped. Everything else goes in as
+itself, so a string of Japanese comes out as Japanese rather than as a row of
+`\u` escapes.
+
+This is the inverse of [`value`](#value) for a basic string, and it is only ever
+needed for a value that was not read from a file -- one that was is written back
+from the text it came with.
+
+-}
+escape : String -> String
+escape text =
+    quote ++ String.foldl (\char acc -> acc ++ escapeChar char) "" text ++ quote
+
+
+escapeChar : Char -> String
+escapeChar char =
+    when Char.toCode char is
+        0x22 ->
+            "\\\u{0022}"
+
+        0x5C ->
+            "\\\\"
+
+        0x08 ->
+            "\\b"
+
+        0x09 ->
+            "\\t"
+
+        0x0A ->
+            "\\n"
+
+        0x0C ->
+            "\\f"
+
+        0x0D ->
+            "\\r"
+
+        code ->
+            if isBasicUnescaped char then
+                String.fromChar char
+
+            else if code <= 0xFFFF then
+                "\\u" ++ hex 4 code
+
+            else
+                "\\U" ++ hex 8 code
+
+
+hex : Int -> Int -> String
+hex width code =
+    String.padLeft width '0' (BigInt.toStringWithBase 16 (BigInt.fromInt code))
+        |> String.toUpper
+
+
+{-| Whether a key may be written without quotes.
+
+    Toml.Strings.isBareKey "server-1"  --> True
+    Toml.Strings.isBareKey "a.b"       --> False
+    Toml.Strings.isBareKey ""          --> False
+
+`unquoted-key` is ASCII letters, digits, `-` and `_`, and at least one of them.
+The Unicode bare keys that were proposed for TOML 1.1 were taken back out before
+it was released.
+
+-}
+isBareKey : String -> Bool
+isBareKey text =
+    text /= "" && String.all isBareKeyChar text
+
+
+isBareKeyChar : Char -> Bool
+isBareKeyChar char =
+    let
+        code =
+            Char.toCode char
+    in
+    (code >= 0x41 && code <= 0x5A)
+        || (code >= 0x61 && code <= 0x7A)
+        || (code >= 0x30 && code <= 0x39)
+        || (code == 0x2D)
+        || (code == 0x5F)

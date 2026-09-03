@@ -14,6 +14,8 @@ Modules, outermost first:
 - `Toml` — the entry point. `parseBytes`, `parse`, `toString`.
 - `Toml.Ast` — the syntactic layer. Types only, no functions.
 - `Toml.Table` — the semantic layer, and where a document gets rejected.
+- `Toml.Decode` — reading a file into your own types.
+- `Toml.Edit` — changing a file in place, on the AST.
 - `Toml.Parse` — the grammar, hand-written against `String.Parser.Advanced`.
 - `Toml.Write` — the AST back to text. Not exposed.
 - `Toml.Number`, `Toml.Strings` — reading a literal into its value. Not exposed.
@@ -25,7 +27,7 @@ Everything runs inside devbox; `gren` and node 22 are not on `PATH` otherwise.
 ```sh
 devbox run build    # compile the package
 devbox run docs     # check the doc comments parse
-devbox run test     # tests/run.sh: 14 checks over 714 corpus files, ~0.7s
+devbox run test     # tests/run.sh: 55 checks, 714 of them corpus files, ~0.8s
 ```
 
 Format sources after editing them, especially after scripted edits:
@@ -48,6 +50,21 @@ within a second with the byte offset and an excerpt from each side.
 
 Adding a field to an AST node means adding it to `Toml.Write` too. If you forget,
 the round trip fails; that is the design working.
+
+## Toml.Edit's two invisible invariants
+
+Both are about line endings and both are broken silently. `rebuild` is the one
+place that restores them, and every edit goes through it:
+
+1. Every expression but the last needs a newline. An edit that inserts after
+   what used to be the final line breaks this.
+2. Whether the *last* expression has one is what says if the file ends with a
+   newline. An edit that removes the final line, or appends past it, changes
+   that without meaning to.
+
+Both were caught by the editing suite comparing whole files rather than the
+value that changed. Keep it that way: "the edit was wrong" is not the failure
+mode this package has, "everything else moved" is.
 
 ## The two layers must not blur
 

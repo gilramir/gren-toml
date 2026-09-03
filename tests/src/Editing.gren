@@ -1,0 +1,337 @@
+module Editing exposing (editingSuite)
+
+{-| Changing a file and leaving the rest of it alone.
+
+This is the suite for the thing the package exists to do. Every test here reads
+a file, changes one thing, writes it back, and compares the *whole file* against
+what it should now be -- not the value that changed, the file. That is the only
+comparison that can catch the failure mode this package is about, which is not
+"the edit was wrong" but "everything else moved".
+
+The file below is deliberately awkward: aligned equals signs, a tab indent, a
+comment block that belongs to a key, a comment block that belongs to nobody
+because of the blank line above it, a hex integer, a trailing comment, and no
+final newline.
+
+@docs editingSuite
+
+-}
+
+import Array exposing (Array)
+import Basics exposing (..)
+import Expect
+import Maybe exposing (Maybe(..))
+import Result exposing (Result(..))
+import String
+import Task
+import Test.Runner.UnitNode as U
+import Toml
+import Toml.Ast as Ast
+import Toml.Edit as Edit
+
+
+{-| The file under test, as lines. Written this way so the whitespace in it is
+visible and deliberate rather than a consequence of the indentation here.
+-}
+before : Array String
+before =
+    [ "# A config file with opinions about whitespace."
+    , ""
+    , "name    = \"widget\"        # what it is called"
+    , "retries = 3"
+    , ""
+    , "# How long to wait before giving up."
+    , "# Seconds, not milliseconds."
+    , "timeout = 30"
+    , ""
+    , "# This block explains the section below, and has a blank line above it,"
+    , "# so it belongs to nobody and must survive anything done to [server]."
+    , ""
+    , "[server]"
+    , "\thost = \"example.com\""
+    , "\tport = 0x1F"
+    , ""
+    , "[server.tls]"
+    , "enabled = true"
+    , ""
+    , "[logging]"
+    , "level = \"warn\""
+    ]
+
+
+source : String
+source =
+    String.join "\n" before
+
+
+{-| Read, change, write. The whole file comes back as a single string.
+-}
+edit : (Toml.Document -> Toml.Document) -> Result String String
+edit change =
+    Toml.parse source
+        |> Result.mapError Toml.errorToString
+        |> Result.map (change >> Toml.toString)
+
+
+{-| The file with `before` changed by an ordinary line-level edit, so that a
+test can say what it expects by describing the change rather than by repeating
+twenty lines.
+-}
+expecting : (Array String -> Array String) -> Result String String
+expecting change =
+    Ok (String.join "\n" (change before))
+
+
+replaceLine : String -> String -> Array String -> Array String
+replaceLine old new lines =
+    Array.map
+        (\line ->
+            if line == old then
+                new
+
+            else
+                line
+        )
+        lines
+
+
+dropLines : Array String -> Array String -> Array String
+dropLines gone lines =
+    Array.keepIf (\line -> not (Array.member line gone)) lines
+
+
+afterLine : String -> String -> Array String -> Array String
+afterLine anchor added lines =
+    Array.mapAndFlatten
+        (\line ->
+            if line == anchor then
+                [ line, added ]
+
+            else
+                [ line ]
+        )
+        lines
+
+
+{-| -}
+editingSuite : U.Suite
+editingSuite =
+    U.suite
+        { name = "Editing"
+        , setUpSuite = U.noSuiteFixture
+        , tearDownSuite = U.noTearDown
+        , setUp = \_ -> Task.succeed {}
+        , tearDown = U.noTearDown
+        , tests =
+            -- THE FILE COMES BACK
+            [ U.test "an untouched document is the file it came from" <| \_ ->
+                Task.succeed (Expect.equal (Ok source) (edit identity))
+            -- CHANGING A VALUE CHANGES ONLY THE VALUE
+            , U.test "changing a value keeps the alignment around it" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expecting (replaceLine "retries = 3" "retries = 5"))
+                        (edit (Edit.set [ "retries" ] (Edit.int 5)))
+                    )
+            , U.test "and the trailing comment on the line" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expecting
+                            (replaceLine
+                                "name    = \"widget\"        # what it is called"
+                                "name    = \"gadget\"        # what it is called"
+                            )
+                        )
+                        (edit (Edit.set [ "name" ] (Edit.string "gadget")))
+                    )
+            , U.test "a key inside a table is found through its header" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expecting (replaceLine "\tport = 0x1F" "\tport = 9090"))
+                        (edit (Edit.set [ "server", "port" ] (Edit.int 9090)))
+                    )
+            , U.test "and one two levels down" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expecting (replaceLine "enabled = true" "enabled = false"))
+                        (edit (Edit.set [ "server", "tls", "enabled" ] (Edit.bool False)))
+                    )
+            , U.test "a string is escaped on the way in" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expecting
+                            (replaceLine
+                                "name    = \"widget\"        # what it is called"
+                                "name    = \"a\\tb\"        # what it is called"
+                            )
+                        )
+                        (edit (Edit.set [ "name" ] (Edit.string "a\tb")))
+                    )
+            -- ADDING A KEY
+            , U.test "a new key lands with the others in its table, indented to match" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expecting (afterLine "\tport = 0x1F" "\tretries = 2"))
+                        (edit (Edit.set [ "server", "retries" ] (Edit.int 2)))
+                    )
+            , U.test "a new top-level key lands after the last top-level key" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expecting (afterLine "timeout = 30" "verbose = true"))
+                        (edit (Edit.set [ "verbose" ] (Edit.bool True)))
+                    )
+            , U.test "a key for a table that does not exist brings a header with it" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (Ok (source ++ "\n[metrics]\nenabled = true"))
+                        (edit (Edit.set [ "metrics", "enabled" ] (Edit.bool True)))
+                    )
+            -- REMOVING A KEY, AND ITS COMMENTS
+            , U.test "removing a key takes the comment block above it" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expecting
+                            (dropLines
+                                [ "# How long to wait before giving up."
+                                , "# Seconds, not milliseconds."
+                                , "timeout = 30"
+                                ]
+                            )
+                        )
+                        (edit (Edit.remove [ "timeout" ]))
+                    )
+            , U.test "and the trailing comment on its own line" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expecting (dropLines [ "name    = \"widget\"        # what it is called" ]))
+                        (edit (Edit.remove [ "name" ]))
+                    )
+            , U.test "a key with no comment above it takes nothing extra" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expecting (dropLines [ "retries = 3" ]))
+                        (edit (Edit.remove [ "retries" ]))
+                    )
+            , U.test "removing a key that is not there changes nothing" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok source) (edit (Edit.remove [ "nope" ])))
+            -- THE BLANK LINE IS THE ESCAPE HATCH
+            , U.test "a comment block with a blank line above it survives" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (Ok
+                            (String.join "\n"
+                                (Array.prepend (Array.takeFirst 12 before)
+                                    [ "[logging]", "level = \"warn\"" ]
+                                )
+                            )
+                        )
+                        (edit (Edit.removeTable [ "server" ]))
+                    )
+            -- A SECTION'S OWN BLANK LINES GO WITH IT
+            , U.test "removing a table takes the whitespace inside it too" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (Ok
+                            (String.join "\n"
+                                (Array.prepend (Array.takeFirst 16 before)
+                                    [ "[logging]", "level = \"warn\"" ]
+                                )
+                            )
+                        )
+                        (edit (Edit.removeTable [ "server", "tls" ]))
+                    )
+            -- LOOKING AROUND
+            , U.test "comments says which ones belong to a key" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        { leading =
+                            [ " How long to wait before giving up."
+                            , " Seconds, not milliseconds."
+                            ]
+                        , trailing = Nothing
+                        }
+                        (readComments [ "timeout" ])
+                    )
+            , U.test "and which one is on the line" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        { leading = [], trailing = Just " what it is called" }
+                        (readComments [ "name" ])
+                    )
+            , U.test "paths lists every key, headers resolved" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (Ok
+                            [ [ "name" ]
+                            , [ "retries" ]
+                            , [ "timeout" ]
+                            , [ "server", "host" ]
+                            , [ "server", "port" ]
+                            , [ "server", "tls", "enabled" ]
+                            , [ "logging", "level" ]
+                            ]
+                        )
+                        (Toml.parse source
+                            |> Result.mapError Toml.errorToString
+                            |> Result.map Edit.paths
+                        )
+                    )
+            -- EDITS COMPOSE
+            , U.test "several edits in a row are still only those edits" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expecting
+                            (replaceLine "retries = 3" "retries = 5"
+                                >> replaceLine "\tport = 0x1F" "\tport = 8443"
+                                >> dropLines [ "level = \"warn\"" ]
+                                >> afterLine "\tport = 8443" "\tbacklog = 128"
+                            )
+                        )
+                        (edit
+                            (Edit.set [ "retries" ] (Edit.int 5)
+                                >> Edit.set [ "server", "port" ] (Edit.int 8443)
+                                >> Edit.remove [ "logging", "level" ]
+                                >> Edit.set [ "server", "backlog" ] (Edit.int 128)
+                            )
+                        )
+                    )
+            -- AND THE RESULT IS STILL A TOML FILE
+            , U.test "what comes out parses again to what was asked for" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok (Just "9090"))
+                        (edit (Edit.set [ "server", "port" ] (Edit.int 9090))
+                            |> Result.andThen
+                                (\written ->
+                                    Toml.parse written
+                                        |> Result.mapError Toml.errorToString
+                                        |> Result.map
+                                            (\document ->
+                                                Edit.get [ "server", "port" ] document
+                                                    |> Maybe.map rawOf
+                                            )
+                                )
+                        )
+                    )
+            ]
+        }
+
+
+readComments : Array String -> { leading : Array String, trailing : Maybe String }
+readComments path =
+    when Toml.parse source is
+        Ok document ->
+            Edit.comments path document
+
+        Err _ ->
+            { leading = [], trailing = Nothing }
+
+
+rawOf : Ast.Value -> String
+rawOf content =
+    when content is
+        Ast.IntegerVal fields ->
+            fields.raw
+
+        _ ->
+            "?"

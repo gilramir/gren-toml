@@ -1,0 +1,785 @@
+module Toml.Edit exposing
+    ( get, set, remove, removeTable
+    , comments, paths
+    , string, int, bigInt, float, bigDecimal, bool
+    , offsetDateTime, localDateTime, localDate, localTime
+    )
+
+{-| Changing a TOML file and leaving the rest of it alone.
+
+    Toml.parseBytes source
+        |> Result.map (Toml.Edit.set [ "server", "port" ] (Toml.Edit.int 9090))
+        |> Result.map Toml.toString
+
+Every byte the edit did not touch comes back as it was: the blank lines, the
+alignment, the comments, and the `0x1F` you wrote instead of `31`. That is what
+this module is for, and it is why the AST underneath it stores whitespace as
+text -- see [`Toml.Ast`](Toml-Ast).
+
+
+## Which comments belong to a key
+
+Deleting a key should delete the comment that explains it and leave alone the
+one that explains the file. Nothing in TOML says which is which, so this is a
+convention, and here it is:
+
+  - **Leading.** Own-line comments directly above a key, with no blank line
+    between, belong to it. They go when it goes.
+  - **Trailing.** A comment on the same line, after the value, belongs to it.
+  - **Floating.** Anything after a blank line belongs to nobody and survives.
+  - **Header.** Comments before the first key belong to the document.
+
+The blank line is the escape hatch, and it is worth knowing about. A comment
+block that introduces a whole section rather than the one key under it should
+have a blank line beneath it, or deleting that key will take the section heading
+with it.
+
+
+## What a path means here
+
+A path is the key as the *table tree* sees it: `[ "server", "port" ]` finds
+`port` under `[server]`, and finds it equally whether the file wrote it as a
+header and a key, as `server.port = 9090`, or as a header and a dotted key.
+
+It does not reach inside an inline table or an array. `a = {b = 1}` has the path
+`[ "a" ]` and nothing under it; to change `b`, replace the whole inline table.
+That boundary is where the round trip stops being obvious -- an inline table has
+no lines to insert into -- so it is drawn here rather than guessed at.
+
+@docs get, set, remove, removeTable
+
+
+## Looking around
+
+@docs comments, paths
+
+
+## Values to put in
+
+Each of these builds the value *and* the text for it, since a value that was not
+read from a file has no text of its own yet.
+
+@docs string, int, bigInt, float, bigDecimal, bool
+@docs offsetDateTime, localDateTime, localDate, localTime
+
+-}
+
+import Array exposing (Array)
+import Basics exposing (..)
+import BigDecimal exposing (BigDecimal)
+import BigInt exposing (BigInt)
+import Civil.Date as Date exposing (Date)
+import Civil.DateTime as DateTime exposing (DateTime)
+import Civil.Time as CivilTime exposing (Time)
+import Maybe exposing (Maybe(..))
+import String
+import Toml.Ast as Ast
+    exposing
+        ( Comment
+        , Content(..)
+        , Document
+        , Expression
+        , Key
+        , Newline(..)
+        , SimpleKey
+        , TableKind(..)
+        , Value(..)
+        )
+import Toml.Strings as Strings
+
+
+
+-- LOOKING AROUND
+
+
+{-| The value at a path, if a key there holds one.
+-}
+get : Array String -> Document -> Maybe Value
+get path document =
+    indexOf path document
+        |> Maybe.andThen
+            (\index ->
+                when Array.get index document.expressions is
+                    Just expression ->
+                        when expression.content is
+                            Pair fields ->
+                                Just fields.keyval.value
+
+                            _ ->
+                                Nothing
+
+                    Nothing ->
+                        Nothing
+            )
+
+
+{-| Every key in the document, in the order the file writes them.
+
+Table headers are not keys and are not here; the path of a key written under
+`[server]` begins with `server` all the same.
+
+-}
+paths : Document -> Array (Array String)
+paths document =
+    Array.map2
+        (\expression header ->
+            when expression.content is
+                Pair fields ->
+                    Just (Array.prepend header (keyPath fields.keyval.key))
+
+                _ ->
+                    Nothing
+        )
+        document.expressions
+        (headers document.expressions)
+        |> Array.mapAndKeepJust identity
+
+
+{-| The comments that belong to a key, by the convention above.
+
+    { leading = [ "# how long to wait" ], trailing = Just " seconds" }
+
+-}
+comments : Array String -> Document -> { leading : Array String, trailing : Maybe String }
+comments path document =
+    when indexOf path document is
+        Nothing ->
+            { leading = [], trailing = Nothing }
+
+        Just index ->
+            { leading =
+                Array.slice (firstOwned index document.expressions) index document.expressions
+                    |> Array.mapAndKeepJust ownComment
+            , trailing =
+                when Array.get index document.expressions is
+                    Just expression ->
+                        when expression.content is
+                            Pair fields ->
+                                Maybe.map .text fields.comment
+
+                            _ ->
+                                Nothing
+
+                    Nothing ->
+                        Nothing
+            }
+
+
+ownComment : Expression -> Maybe String
+ownComment expression =
+    when expression.content is
+        Empty fields ->
+            Maybe.map .text fields.comment
+
+        _ ->
+            Nothing
+
+
+
+-- CHANGING
+
+
+{-| Put a value at a path.
+
+If a key is already there, only its value changes: the key keeps its spelling,
+the equals sign keeps the whitespace around it, and the comment on the line stays
+where it was. Nothing else in the file moves.
+
+If there is no such key, one is added. It goes at the end of the table it belongs
+to, after the last key already in it, indented to match. If the table does not
+exist either, a `[header]` for it is appended to the file with the key beneath.
+
+-}
+set : Array String -> Value -> Document -> Document
+set path content document =
+    when indexOf path document is
+        Just index ->
+            rebuild document
+                (Array.update index (replaceValue content) document.expressions)
+
+        Nothing ->
+            insert path content document
+
+
+{-| Only the value. The key keeps its spelling, the equals sign keeps the
+whitespace around it, and the comment on the line stays where it was.
+-}
+replaceValue : Value -> Expression -> Expression
+replaceValue content expression =
+    when expression.content is
+        Pair fields ->
+            let
+                pair =
+                    fields.keyval
+            in
+            { expression
+                | content = Pair { fields | keyval = { pair | value = content } }
+            }
+
+        _ ->
+            expression
+
+
+{-| Take a key out, and the comments that belong to it with it.
+
+The line goes, its leading comment block goes, and its trailing comment goes with
+the line it was on. A floating comment -- one with a blank line above it -- stays,
+which is the whole point of the blank line.
+
+Nothing else changes. Removing the last key of a table leaves the `[header]`
+behind, because an empty table is still a table and saying otherwise would be
+this module deciding something the file did not.
+
+-}
+remove : Array String -> Document -> Document
+remove path document =
+    when indexOf path document is
+        Nothing ->
+            document
+
+        Just index ->
+            rebuild document
+                (cut (firstOwned index document.expressions) (index + 1) document.expressions)
+
+
+{-| Take a whole table out: its `[header]`, everything under it, and the comments
+that belong to the header.
+
+Sub-tables go too, since `[a.b]` is under `[a]`. An array of tables named by the
+path goes entirely, every item of it.
+
+-}
+removeTable : Array String -> Document -> Document
+removeTable path document =
+    let
+        owned =
+            Array.map2 (under path)
+                (headers document.expressions)
+                document.expressions
+
+        dropped =
+            Array.indexedMap
+                (\index isOwned ->
+                    isOwned || leadsAnOwnedBlock index owned document.expressions
+                )
+                owned
+    in
+    rebuild document
+        (Array.map2
+            (\expression drop ->
+                if drop then
+                    Nothing
+
+                else
+                    Just expression
+            )
+            document.expressions
+            dropped
+            |> Array.mapAndKeepJust identity
+        )
+
+
+{-| Whether this expression is part of the comment block leading a table that is
+being removed.
+
+A table may appear in more than one place -- `[a]`, then `[c]`, then `[a.b]` --
+so this looks for the start of every run of removed expressions rather than
+assuming there is one.
+
+-}
+leadsAnOwnedBlock : Int -> Array Bool -> Array Expression -> Bool
+leadsAnOwnedBlock index owned expressions =
+    let
+        startsHere at =
+            Maybe.withDefault False (Array.get at owned)
+                && not (Maybe.withDefault False (Array.get (at - 1) owned))
+
+        insideCommentBlockOf at =
+            startsHere at && firstOwned at expressions <= index
+    in
+    Array.indexedFoldl
+        (\at _ found -> found || (at > index && insideCommentBlockOf at))
+        False
+        owned
+
+
+{-| Whether an expression belongs to the table at `path`: the header itself, or
+anything the header is in effect for, or any table nested under it.
+-}
+under : Array String -> Array String -> Expression -> Bool
+under path header expression =
+    when expression.content is
+        Header fields ->
+            prefixOf path (keyPath fields.header.key)
+
+        _ ->
+            prefixOf path header
+
+
+prefixOf : Array String -> Array String -> Bool
+prefixOf path candidate =
+    Array.length candidate
+        >= Array.length path
+        && Array.takeFirst (Array.length path) candidate
+        == path
+
+
+
+{-| Put an edited expression list back into its document, with the two
+line-ending invariants restored.
+
+Both of them are easy to break and invisible when broken until the file is
+written: every expression but the last needs a newline, and whether the *last*
+one has one is what says if the file ends with a newline. An edit that removes
+the final line, or adds one after it, changes that without meaning to.
+
+-}
+rebuild : Document -> Array Expression -> Document
+rebuild original expressions =
+    { original
+        | expressions =
+            expressions
+                |> withInteriorNewlines (styleOf original)
+                |> endedLike original.expressions
+    }
+
+
+withInteriorNewlines : Newline -> Array Expression -> Array Expression
+withInteriorNewlines style expressions =
+    let
+        lastIndex =
+            Array.length expressions - 1
+    in
+    Array.indexedMap
+        (\index expression ->
+            if index == lastIndex || expression.newline /= Nothing then
+                expression
+
+            else
+                { expression | newline = Just style }
+        )
+        expressions
+
+
+{-| Give the result the same ending the original had.
+-}
+endedLike : Array Expression -> Array Expression -> Array Expression
+endedLike original result =
+    when { was = lastNewline original, now = lastNewline result } is
+        { was = Nothing, now = Just style } ->
+            setLastNewline Nothing result
+
+        { was = Just style, now = Nothing } ->
+            setLastNewline (Just style) result
+
+        _ ->
+            result
+
+
+lastNewline : Array Expression -> Maybe Newline
+lastNewline expressions =
+    Array.last expressions
+        |> Maybe.andThen .newline
+
+
+setLastNewline : Maybe Newline -> Array Expression -> Array Expression
+setLastNewline ending expressions =
+    when Array.popLast expressions is
+        Just { last, initial } ->
+            Array.pushLast { last | newline = ending } initial
+
+        Nothing ->
+            expressions
+
+
+
+-- FINDING
+
+
+{-| The index of the expression holding the key at `path`.
+-}
+indexOf : Array String -> Document -> Maybe Int
+indexOf path document =
+    Array.map2
+        (\expression header ->
+            when expression.content is
+                Pair fields ->
+                    Array.prepend header (keyPath fields.keyval.key) == path
+
+                _ ->
+                    False
+        )
+        document.expressions
+        (headers document.expressions)
+        |> firstIndexOfTrue
+
+
+firstIndexOfTrue : Array Bool -> Maybe Int
+firstIndexOfTrue flags =
+    Array.indexedFoldl
+        (\index flag found ->
+            when found is
+                Just _ ->
+                    found
+
+                Nothing ->
+                    if flag then
+                        Just index
+
+                    else
+                        Nothing
+        )
+        Nothing
+        flags
+
+
+{-| The table header in effect at each expression, in file order.
+
+For a header expression this is its own path, so that `[a]` counts as being in
+`a` -- which is what makes a key inserted into `a` land after the header rather
+than before it.
+
+-}
+headers : Array Expression -> Array (Array String)
+headers expressions =
+    Array.foldl
+        (\expression soFar ->
+            let
+                next =
+                    when expression.content is
+                        Header fields ->
+                            keyPath fields.header.key
+
+                        _ ->
+                            soFar.current
+            in
+            { current = next, found = Array.pushLast next soFar.found }
+        )
+        { current = [], found = [] }
+        expressions
+        |> .found
+
+
+{-| The first expression that belongs to the key at `index`: the start of the
+comment block directly above it, or the key itself if there is none.
+
+A blank line ends the block, and so does anything that is not an own-line
+comment.
+
+-}
+firstOwned : Int -> Array Expression -> Int
+firstOwned index expressions =
+    let
+        walk at =
+            if at <= 0 then
+                at
+
+            else
+                when Array.get (at - 1) expressions is
+                    Just previous ->
+                        when previous.content is
+                            Empty fields ->
+                                when fields.comment is
+                                    Just _ ->
+                                        walk (at - 1)
+
+                                    Nothing ->
+                                        at
+
+                            _ ->
+                                at
+
+                    Nothing ->
+                        at
+    in
+    walk index
+
+
+cut : Int -> Int -> Array Expression -> Array Expression
+cut from to expressions =
+    Array.prepend
+        (Array.takeFirst from expressions)
+        (Array.dropFirst to expressions)
+
+
+
+-- INSERTING
+
+
+insert : Array String -> Value -> Document -> Document
+insert path content document =
+    let
+        tablePath =
+            Array.dropLast 1 path
+
+        leaf =
+            Maybe.withDefault "" (Array.last path)
+
+        pair =
+            { key = keyFor [ leaf ]
+            , wsBeforeEq = " "
+            , wsAfterEq = " "
+            , value = content
+            }
+    in
+    when lastOf tablePath document is
+        Just index ->
+            insertAfter index pair document
+
+        Nothing ->
+            append tablePath pair document
+
+
+{-| The last header or key belonging to `tablePath`, which is where a new key
+goes. Trailing blank lines and floating comments are deliberately skipped: a new
+key belongs beside the keys, not after the gap.
+-}
+lastOf : Array String -> Document -> Maybe Int
+lastOf tablePath document =
+    Array.map2
+        (\expression header ->
+            header
+                == tablePath
+                && (when expression.content is
+                        Empty _ ->
+                            False
+
+                        _ ->
+                            True
+                   )
+        )
+        document.expressions
+        (headers document.expressions)
+        |> Array.indexedFoldl
+            (\index flag found ->
+                if flag then
+                    Just index
+
+                else
+                    found
+            )
+            Nothing
+
+
+insertAfter : Int -> Ast.KeyVal -> Document -> Document
+insertAfter index pair document =
+    when Array.get index document.expressions is
+        Nothing ->
+            document
+
+        Just neighbour ->
+            rebuild document
+                (Array.insert (index + 1)
+                    { indent = neighbour.indent
+                    , content = Pair { keyval = pair, trailing = "", comment = Nothing }
+                    , newline = Just (styleOf document)
+                    }
+                    document.expressions
+                )
+
+
+{-| No table for this key yet, so the file grows a `[header]` and the key under
+it. Both go at the very end, after everything the file already says.
+-}
+append : Array String -> Ast.KeyVal -> Document -> Document
+append tablePath pair document =
+    let
+        style =
+            styleOf document
+
+        added =
+            if Array.length tablePath == 0 then
+                [ { indent = ""
+                  , content = Pair { keyval = pair, trailing = "", comment = Nothing }
+                  , newline = Just style
+                  }
+                ]
+
+            else
+                [ { indent = ""
+                  , content =
+                        Header
+                            { header =
+                                { kind = Std
+                                , wsBefore = ""
+                                , key = keyFor tablePath
+                                , wsAfter = ""
+                                }
+                            , trailing = ""
+                            , comment = Nothing
+                            }
+                  , newline = Just style
+                  }
+                , { indent = ""
+                  , content = Pair { keyval = pair, trailing = "", comment = Nothing }
+                  , newline = Just style
+                  }
+                ]
+    in
+    rebuild document (Array.prepend document.expressions added)
+
+
+{-| Which line ending this file uses, so that a line added to it matches. The
+first one wins; a file that mixes them is already odd and this does not make it
+odder.
+-}
+styleOf : Document -> Newline
+styleOf document =
+    Array.mapAndKeepJust .newline document.expressions
+        |> Array.first
+        |> Maybe.withDefault Lf
+
+
+
+-- KEYS
+
+
+keyPath : Key -> Array String
+keyPath name =
+    Array.prepend [ name.first.value ] (Array.map (\part -> part.key.value) name.rest)
+
+
+keyFor : Array String -> Key
+keyFor path =
+    { first = simpleKeyFor (Maybe.withDefault "" (Array.first path))
+    , rest =
+        Array.dropFirst 1 path
+            |> Array.map
+                (\name ->
+                    { wsBefore = "", wsAfter = "", key = simpleKeyFor name }
+                )
+    }
+
+
+{-| A key part, written bare when the grammar allows and quoted when it does not.
+-}
+simpleKeyFor : String -> SimpleKey
+simpleKeyFor name =
+    { raw =
+        if Strings.isBareKey name then
+            name
+
+        else
+            Strings.escape name
+    , value = name
+    }
+
+
+
+-- VALUES
+
+
+{-| A string.
+-}
+string : String -> Value
+string text =
+    StringVal { raw = Strings.escape text, value = text }
+
+
+{-| An integer that fits in a Gren `Int`.
+-}
+int : Int -> Value
+int number =
+    bigInt (BigInt.fromInt number)
+
+
+{-| An integer of any size.
+-}
+bigInt : BigInt -> Value
+bigInt number =
+    IntegerVal { raw = BigInt.toString number, value = number }
+
+
+{-| A float.
+
+`inf` and `nan` are written as those words. Everything else is written with a
+decimal point even when it does not need one, because `1` without it is an
+integer in TOML and this function was asked for a float.
+
+-}
+float : Float -> Value
+float number =
+    if Basics.isNaN number then
+        FloatVal { raw = "nan", value = Ast.NotANumber Ast.Positive }
+
+    else if Basics.isInfinite number then
+        if number > 0 then
+            FloatVal { raw = "inf", value = Ast.Infinite Ast.Positive }
+
+        else
+            FloatVal { raw = "-inf", value = Ast.Infinite Ast.Negative }
+
+    else
+        when BigDecimal.fromFloat number is
+            Just exact ->
+                bigDecimal exact
+
+            Nothing ->
+                FloatVal { raw = "nan", value = Ast.NotANumber Ast.Positive }
+
+
+{-| An exact decimal, written as it stands.
+-}
+bigDecimal : BigDecimal -> Value
+bigDecimal number =
+    let
+        written =
+            BigDecimal.toString number
+    in
+    FloatVal
+        { raw =
+            if String.contains "." written || String.contains "e" written then
+                written
+
+            else
+                written ++ ".0"
+        , value = Ast.Finite number
+        }
+
+
+{-| A boolean.
+-}
+bool : Bool -> Value
+bool flag =
+    BooleanVal
+        { raw =
+            if flag then
+                "true"
+
+            else
+                "false"
+        , value = flag
+        }
+
+
+{-| A date and time with an offset. Fails over to a local date-time if the value
+has no offset, since that is what it is.
+-}
+offsetDateTime : DateTime -> Value
+offsetDateTime moment =
+    if DateTime.isLocal moment then
+        localDateTime moment
+
+    else
+        OffsetDateTimeVal { raw = DateTime.toString moment, value = moment }
+
+
+{-| A date and time with no offset.
+-}
+localDateTime : DateTime -> Value
+localDateTime moment =
+    LocalDateTimeVal { raw = DateTime.toString moment, value = moment }
+
+
+{-| A date.
+-}
+localDate : Date -> Value
+localDate day =
+    LocalDateVal { raw = Date.toString day, value = day }
+
+
+{-| A time of day.
+-}
+localTime : Time -> Value
+localTime clock =
+    LocalTimeVal { raw = CivilTime.toString clock, value = clock }

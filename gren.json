@@ -9,6 +9,7 @@
         "Toml",
         "Toml.Ast",
         "Toml.Decode",
+        "Toml.Edit",
         "Toml.Table"
     ],
     "gren-version": "0.6.0 <= v < 0.7.0",

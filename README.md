@@ -19,6 +19,32 @@ test suite. It is exact by construction rather than by effort: the AST stores
 the whitespace and the comments as *text*, so there is nowhere for a character
 to go missing.
 
+## Editing
+
+```gren
+Toml.parseBytes source
+    |> Result.map (Toml.Edit.set [ "server", "port" ] (Toml.Edit.int 9090))
+    |> Result.map Toml.toString
+```
+
+`set` changes only the value: the key keeps its spelling, the equals sign keeps
+the whitespace around it, and the comment on the line stays. A key that is not
+there yet is added at the end of the table it belongs to, indented to match its
+neighbours; if the table is not there either, a `[header]` comes with it.
+
+`remove` takes a key out along with the comments that belong to it. Which ones
+those are is a convention, since TOML does not say, and it is this one:
+
+- **Leading** — own-line comments directly above a key, no blank line between.
+  They go when it goes.
+- **Trailing** — a comment after the value on the same line.
+- **Floating** — anything after a blank line belongs to nobody and survives.
+- **Header** — comments before the first key belong to the document.
+
+The blank line is the escape hatch, and it is worth knowing about: a comment
+block that introduces a whole section rather than the one key beneath it should
+have a blank line under it, or deleting that key will take the heading too.
+
 ## Two layers, and you pick
 
 **`Toml.Ast`** is the file: a list of expressions in the order they appear,
