@@ -1,0 +1,96 @@
+module Semantics exposing (semanticsSuite)
+
+{-| Does the library accept exactly the documents the official suite says it
+should?
+
+Two questions, and they are the two halves of conformance:
+
+  - Every file `toml-test` calls **valid** must parse *and* lower without
+    complaint. A rule enforced too eagerly shows up here.
+  - Every file it calls **invalid** must be refused by one of the two -- and it
+    does not matter which. About a third of them are perfectly good syntax and
+    are caught by the lowering; the rest are caught by the parser. What matters
+    is that the document does not come out the other end.
+
+This suite does not check that the *values* are right; `Values` does that
+against the suite's own JSON.
+
+@docs semanticsSuite
+
+-}
+
+import Array exposing (Array)
+import Basics exposing (..)
+import Corpus exposing (File)
+import Expect
+import FileSystem
+import Maybe exposing (Maybe(..))
+import Result exposing (Result(..))
+import String
+import Task
+import Test.Runner.UnitNode as U
+import Toml
+import Toml.Table as Table
+
+
+{-| -}
+semanticsSuite : { fs : FileSystem.Permission } -> U.Suite
+semanticsSuite perms =
+    U.suite
+        { name = "Semantics"
+        , setUpSuite = Corpus.load perms.fs
+        , tearDownSuite = U.noTearDown
+        , setUp = \corpus -> Task.succeed corpus
+        , tearDown = U.noTearDown
+        , tests =
+            [ U.test "every valid file parses and lowers" <| \corpus ->
+                Task.succeed
+                    (Expect.equal []
+                        (corpus
+                            |> Array.keepIf .valid
+                            |> Array.mapAndKeepJust
+                                (\file ->
+                                    when read file is
+                                        Ok _ ->
+                                            Nothing
+
+                                        Err message ->
+                                            Just (file.path ++ ": " ++ message)
+                                )
+                        )
+                    )
+            , U.test "every invalid file is refused by one of the two" <| \corpus ->
+                Task.succeed
+                    (Expect.equal []
+                        (corpus
+                            |> Array.keepIf (\file -> not file.valid)
+                            |> Array.mapAndKeepJust
+                                (\file ->
+                                    when read file is
+                                        Err _ ->
+                                            Nothing
+
+                                        Ok _ ->
+                                            Just file.path
+                                )
+                        )
+                    )
+            ]
+        }
+
+
+{-| Both halves, with whichever one complained saying why.
+-}
+read : File -> Result String Table.Table
+read file =
+    when Toml.parseBytes file.bytes is
+        Err error ->
+            Err (Toml.errorToString error)
+
+        Ok doc ->
+            when Table.fromDocument doc is
+                Err error ->
+                    Err (Table.errorToString error)
+
+                Ok table ->
+                    Ok table

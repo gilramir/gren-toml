@@ -19,8 +19,10 @@ import Literals exposing (literalsSuite)
 import Node
 import Numbers exposing (numbersSuite)
 import RoundTrip exposing (roundTripSuite)
+import Semantics exposing (semanticsSuite)
 import Task
 import Test.Runner.UnitNode as U
+import Values exposing (valuesSuite)
 
 
 main : Node.SimpleProgram a
@@ -39,5 +41,7 @@ main =
                 [ numbersSuite
                 , literalsSuite
                 , roundTripSuite perms
+                , semanticsSuite perms
+                , valuesSuite perms
                 ]
         }

@@ -1,0 +1,127 @@
+module Corpus exposing (File, load, root)
+
+{-| Reading the official TOML test suite off the disk.
+
+The files are read at run time rather than baked into a fixture, because there
+are 714 of them and because the point is to run against what `toml-test`
+actually ships. The 1.1.0 manifest decides which ones: the suite also carries
+files that only apply to 1.0.
+
+@docs File, load, root
+
+-}
+
+import Array exposing (Array)
+import Basics exposing (..)
+import Bytes exposing (Bytes)
+import Bytes.Decode
+import FileSystem
+import FileSystem.Path as Path
+import Maybe exposing (Maybe(..))
+import String
+import Task exposing (Task)
+
+
+{-| Where the vendored suite sits, relative to `tests/`, which is where `run.sh`
+leaves the working directory.
+-}
+root : String
+root =
+    "../../vendor/toml-test/tests"
+
+
+{-| One file of the suite.
+
+`source` is what a writer must produce to have round-tripped it: the decoded
+text, with the byte order mark put back if the bytes had one. `bytes` is what
+the parser is actually given.
+
+-}
+type alias File =
+    { path : String
+    , bytes : Bytes
+    , source : String
+    , valid : Bool
+    }
+
+
+{-| Every `.toml` file in the 1.1.0 manifest that is valid UTF-8.
+
+The nine that are not are in `invalid/encoding`, deliberately, and they are the
+one group the parser never sees: the decode refuses them before there is a
+`String` to look at.
+
+-}
+load : FileSystem.Permission -> Task String (Array File)
+load fs =
+    readText fs (root ++ "/files-toml-1.1.0")
+        |> Task.andThen
+            (\manifest ->
+                manifest
+                    |> String.split "\n"
+                    |> Array.keepIf (String.endsWith ".toml")
+                    |> Array.map (readFile fs)
+                    |> Task.sequence
+            )
+        |> Task.map (Array.mapAndKeepJust identity)
+
+
+readFile : FileSystem.Permission -> String -> Task String (Maybe File)
+readFile fs name =
+    FileSystem.readFile fs (Path.fromPosixString (root ++ "/" ++ name))
+        |> Task.mapError FileSystem.errorToString
+        |> Task.map
+            (\bytes ->
+                when Bytes.toString bytes is
+                    Nothing ->
+                        Nothing
+
+                    Just text ->
+                        Just
+                            { path = name
+                            , bytes = bytes
+                            , source = restoreBom bytes ++ text
+                            , valid = String.startsWith "valid/" name
+                            }
+            )
+
+
+readText : FileSystem.Permission -> String -> Task String String
+readText fs name =
+    FileSystem.readFile fs (Path.fromPosixString name)
+        |> Task.mapError FileSystem.errorToString
+        |> Task.andThen
+            (\bytes ->
+                when Bytes.toString bytes is
+                    Just text ->
+                        Task.succeed text
+
+                    Nothing ->
+                        Task.fail (name ++ " is not valid UTF-8")
+            )
+
+
+{-| Decoding removes one leading byte order mark without saying so, so the text
+to compare a writer against is the decoded text with the mark put back. This is
+worked out from the bytes here rather than asked of `Toml`, which is the point:
+the library's answer is what is under test.
+-}
+restoreBom : Bytes -> String
+restoreBom bytes =
+    let
+        found =
+            Bytes.Decode.decode
+                (Bytes.Decode.map3
+                    (\a b c -> a == 0xEF && b == 0xBB && c == 0xBF)
+                    Bytes.Decode.unsignedInt8
+                    Bytes.Decode.unsignedInt8
+                    Bytes.Decode.unsignedInt8
+                )
+                bytes
+                |> Maybe.withDefault False
+    in
+    if found then
+        "﻿"
+
+    else
+        ""

@@ -36,33 +36,15 @@ would be asserting the wrong thing in the wrong place.
 
 import Array exposing (Array)
 import Basics exposing (..)
-import Bytes exposing (Bytes)
-import Bytes.Decode
+import Corpus exposing (File)
 import Expect
 import FileSystem
-import FileSystem.Path as Path
 import Maybe exposing (Maybe(..))
 import Result exposing (Result(..))
 import String
-import Task exposing (Task)
+import Task
 import Test.Runner.UnitNode as U
 import Toml
-
-
-{-| Where the vendored suite sits, relative to `tests/`, which is where
-`run.sh` leaves the working directory.
--}
-root : String
-root =
-    "../../vendor/toml-test/tests"
-
-
-type alias File =
-    { path : String
-    , bytes : Bytes
-    , source : String
-    , valid : Bool
-    }
 
 
 {-| -}
@@ -70,7 +52,7 @@ roundTripSuite : { fs : FileSystem.Permission } -> U.Suite
 roundTripSuite perms =
     U.suite
         { name = "RoundTrip"
-        , setUpSuite = loadCorpus perms.fs
+        , setUpSuite = Corpus.load perms.fs
         , tearDownSuite = U.noTearDown
         , setUp = \corpus -> Task.succeed corpus
         , tearDown = U.noTearDown
@@ -169,88 +151,3 @@ firstDifference expected actual =
 excerpt : String -> Int -> String
 excerpt text at =
     "..." ++ String.slice at (at + 24) text ++ "..."
-
-
--- LOADING
-
-
-loadCorpus : FileSystem.Permission -> Task String (Array File)
-loadCorpus fs =
-    readText fs (root ++ "/files-toml-1.1.0")
-        |> Task.andThen
-            (\manifest ->
-                manifest
-                    |> String.split "\n"
-                    |> Array.keepIf (String.endsWith ".toml")
-                    |> Array.map (readFile fs)
-                    |> Task.sequence
-            )
-        |> Task.map (Array.mapAndKeepJust identity)
-
-
-{-| One file, or `Nothing` if it is not valid UTF-8.
-
-The `invalid/encoding` files are exactly that, deliberately, and they are the
-one group the parser never sees: `Toml.parseBytes` refuses them at the decode.
-There is nothing for this suite to round-trip.
-
--}
-readFile : FileSystem.Permission -> String -> Task String (Maybe File)
-readFile fs name =
-    FileSystem.readFile fs (Path.fromPosixString (root ++ "/" ++ name))
-        |> Task.mapError FileSystem.errorToString
-        |> Task.map
-            (\bytes ->
-                when Bytes.toString bytes is
-                    Nothing ->
-                        Nothing
-
-                    Just text ->
-                        Just
-                            { path = name
-                            , bytes = bytes
-                            , source = restoreBom bytes ++ text
-                            , valid = String.startsWith "valid/" name
-                            }
-            )
-
-
-readText : FileSystem.Permission -> String -> Task String String
-readText fs name =
-    FileSystem.readFile fs (Path.fromPosixString name)
-        |> Task.mapError FileSystem.errorToString
-        |> Task.andThen
-            (\bytes ->
-                when Bytes.toString bytes is
-                    Just text ->
-                        Task.succeed text
-
-                    Nothing ->
-                        Task.fail (name ++ " is not valid UTF-8")
-            )
-
-
-{-| Decoding removes one leading byte order mark without saying so, so the text
-to compare against is the decoded text with the mark put back. This suite works
-it out from the bytes itself rather than asking `Toml`, which is the point: the
-library's answer is what is under test.
--}
-restoreBom : Bytes -> String
-restoreBom bytes =
-    let
-        found =
-            Bytes.Decode.decode
-                (Bytes.Decode.map3
-                    (\a b c -> a == 0xEF && b == 0xBB && c == 0xBF)
-                    Bytes.Decode.unsignedInt8
-                    Bytes.Decode.unsignedInt8
-                    Bytes.Decode.unsignedInt8
-                )
-                bytes
-                |> Maybe.withDefault False
-    in
-    if found then
-        "﻿"
-
-    else
-        ""

@@ -1,0 +1,383 @@
+module Values exposing (valuesSuite)
+
+{-| Does the library read the right *values* out of every valid file?
+
+`Semantics` asks whether a document is accepted. This asks whether what came out
+of it is what `toml-test` says is in it, by comparing against the `.json` sibling
+of every valid `.toml` in the 1.1.0 manifest -- the same file the official runner
+compares against, read straight off the disk.
+
+
+## Comparing the way toml-test compares
+
+The suite's JSON writes every scalar as `{"type": ..., "value": ...}` with the
+value as a *string*, and its runner does not compare those strings directly. Nor
+does this:
+
+  - **Integers** go through `BigInt`, so `1_000` and `1000` agree.
+  - **Floats** go through `BigDecimal`, so `3e1_4` and `3.0e14` agree, and so do
+    `-0` and `0`. `inf` and `nan` are compared as the words they are.
+  - **Date-times** go through `Civil`, so `1987-07-05 17:45:00z` and
+    `1987-07-05T17:45:00Z` agree, and a fraction written `.600` agrees with one
+    written `.6`.
+  - **Strings and booleans** are compared as text, which is what they are.
+
+An object is a scalar rather than a table when it has exactly two keys, `type`
+and `value`, both strings. That is the same heuristic `toml-test`'s own reader
+uses, ambiguity and all.
+
+@docs valuesSuite
+
+-}
+
+import Array exposing (Array)
+import Basics exposing (..)
+import BigDecimal
+import BigInt
+import Bytes
+import Civil.Date as Date
+import Civil.DateTime as DateTime
+import Civil.Time as CivilTime
+import Corpus exposing (File)
+import Dict exposing (Dict)
+import Expect
+import FileSystem
+import FileSystem.Path as Path
+import Json.Decode as Decode
+import Maybe exposing (Maybe(..))
+import Result exposing (Result(..))
+import String
+import Task exposing (Task)
+import Test.Runner.UnitNode as U
+import Toml
+import Toml.Ast as Ast
+import Toml.Table as Table
+
+
+{-| The shape both sides are reduced to before they are compared.
+-}
+type Json
+    = JsonTable (Dict String Json)
+    | JsonArray (Array Json)
+    | JsonScalar { kind : String, text : String }
+
+
+type alias Case =
+    { path : String
+    , expected : Json
+    , actual : Result String Json
+    }
+
+
+{-| -}
+valuesSuite : { fs : FileSystem.Permission } -> U.Suite
+valuesSuite perms =
+    U.suite
+        { name = "Values"
+        , setUpSuite = loadCases perms.fs
+        , tearDownSuite = U.noTearDown
+        , setUp = \cases -> Task.succeed cases
+        , tearDown = U.noTearDown
+        , tests =
+            [ U.test "there is a case for every valid file in the manifest" <| \cases ->
+                Task.succeed (Expect.equal 220 (Array.length cases))
+            , U.test "every valid file reads as the values toml-test expects" <| \cases ->
+                Task.succeed
+                    (Expect.equal []
+                        (cases
+                            |> Array.mapAndKeepJust
+                                (\item ->
+                                    when item.actual is
+                                        Err message ->
+                                            Just (item.path ++ ": " ++ message)
+
+                                        Ok found ->
+                                            if same item.expected found then
+                                                Nothing
+
+                                            else
+                                                Just (item.path ++ ": " ++ describe item.expected found)
+                                )
+                        )
+                    )
+            ]
+        }
+
+
+-- COMPARING
+
+
+same : Json -> Json -> Bool
+same expected actual =
+    when expected is
+        JsonTable wanted ->
+            when actual is
+                JsonTable found ->
+                    (Dict.keys wanted == Dict.keys found)
+                        && Array.all
+                            (\name ->
+                                when { a = Dict.get name wanted, b = Dict.get name found } is
+                                    { a = Just x, b = Just y } ->
+                                        same x y
+
+                                    _ ->
+                                        False
+                            )
+                            (Dict.keys wanted)
+
+                _ ->
+                    False
+
+        JsonArray wanted ->
+            when actual is
+                JsonArray found ->
+                    (Array.length wanted == Array.length found)
+                        && Array.all identity
+                            (Array.map2 same wanted found)
+
+                _ ->
+                    False
+
+        JsonScalar wanted ->
+            when actual is
+                JsonScalar found ->
+                    wanted.kind == found.kind && sameText wanted.kind wanted.text found.text
+
+                _ ->
+                    False
+
+
+{-| Two spellings of the same value, compared as the kind of value they are.
+-}
+sameText : String -> String -> String -> Bool
+sameText kind wanted found =
+    when kind is
+        "integer" ->
+            agree BigInt.fromString (\a b -> BigInt.compare a b == EQ) wanted found
+
+        "float" ->
+            if isSpecialFloat wanted || isSpecialFloat found then
+                wanted == found
+
+            else
+                agree BigDecimal.fromString (\a b -> BigDecimal.compare a b == EQ) wanted found
+
+        "datetime" ->
+            agree DateTime.fromString (\a b -> a == b) wanted found
+
+        "datetime-local" ->
+            agree DateTime.fromString (\a b -> a == b) wanted found
+
+        "date-local" ->
+            agree Date.fromString (\a b -> a == b) wanted found
+
+        "time-local" ->
+            agree CivilTime.fromString (\a b -> a == b) wanted found
+
+        _ ->
+            wanted == found
+
+
+agree : (String -> Maybe a) -> (a -> a -> Bool) -> String -> String -> Bool
+agree read equal wanted found =
+    when { a = read wanted, b = read found } is
+        { a = Just x, b = Just y } ->
+            equal x y
+
+        _ ->
+            False
+
+
+isSpecialFloat : String -> Bool
+isSpecialFloat text =
+    text == "inf" || text == "-inf" || text == "nan" || text == "+inf" || text == "-nan"
+
+
+describe : Json -> Json -> String
+describe expected actual =
+    "expected " ++ flatten expected ++ " but read " ++ flatten actual
+
+
+{-| A one-line rendering, for an assertion message.
+-}
+flatten : Json -> String
+flatten it =
+    when it is
+        JsonTable fields ->
+            "{"
+                ++ String.join ", "
+                    (Array.map
+                        (\name -> name ++ "=" ++ flatten (Maybe.withDefault (JsonScalar { kind = "?", text = "?" }) (Dict.get name fields)))
+                        (Dict.keys fields)
+                    )
+                ++ "}"
+
+        JsonArray items ->
+            "[" ++ String.join ", " (Array.map flatten items) ++ "]"
+
+        JsonScalar scalar ->
+            scalar.kind ++ ":" ++ scalar.text
+
+
+-- THE LIBRARY'S ANSWER
+
+
+encodeTable : Table.Table -> Json
+encodeTable table =
+    JsonTable (Dict.map (\_ content -> encode content) (Table.entries table))
+
+
+encode : Table.Value -> Json
+encode content =
+    when content is
+        Table.StringValue text ->
+            JsonScalar { kind = "string", text = text }
+
+        Table.IntegerValue whole ->
+            JsonScalar { kind = "integer", text = BigInt.toString whole }
+
+        Table.FloatValue fractional ->
+            JsonScalar { kind = "float", text = floatText fractional }
+
+        Table.BooleanValue flag ->
+            JsonScalar
+                { kind = "bool"
+                , text =
+                    if flag then
+                        "true"
+
+                    else
+                        "false"
+                }
+
+        Table.OffsetDateTimeValue moment ->
+            JsonScalar { kind = "datetime", text = DateTime.toString moment }
+
+        Table.LocalDateTimeValue moment ->
+            JsonScalar { kind = "datetime-local", text = DateTime.toString moment }
+
+        Table.LocalDateValue day ->
+            JsonScalar { kind = "date-local", text = Date.toString day }
+
+        Table.LocalTimeValue clock ->
+            JsonScalar { kind = "time-local", text = CivilTime.toString clock }
+
+        Table.ArrayValue items ->
+            JsonArray (Array.map encode items)
+
+        Table.TableValue table ->
+            encodeTable table
+
+        Table.TableArrayValue items ->
+            JsonArray (Array.map encodeTable items)
+
+
+{-| `toml-test` writes both signs of `nan` as `nan`, and both spellings of
+positive infinity as `inf`.
+-}
+floatText : Ast.FloatValue -> String
+floatText fractional =
+    when fractional is
+        Ast.Finite number ->
+            BigDecimal.toString number
+
+        Ast.Infinite Ast.Positive ->
+            "inf"
+
+        Ast.Infinite Ast.Negative ->
+            "-inf"
+
+        Ast.NotANumber _ ->
+            "nan"
+
+
+-- THE SUITE'S ANSWER
+
+
+{-| An object is a scalar when it has exactly two keys, `type` and `value`, both
+strings. Anything else with string keys is a table. This is `toml-test`'s own
+rule, so a document that manages to be ambiguous under it is ambiguous for the
+official runner too.
+-}
+jsonDecoder : Decode.Decoder Json
+jsonDecoder =
+    Decode.oneOf
+        [ Decode.array (Decode.lazy (\_ -> jsonDecoder)) |> Decode.map JsonArray
+        , scalarDecoder
+        , Decode.dict (Decode.lazy (\_ -> jsonDecoder)) |> Decode.map JsonTable
+        ]
+
+
+scalarDecoder : Decode.Decoder Json
+scalarDecoder =
+    Decode.dict Decode.string
+        |> Decode.andThen
+            (\fields ->
+                when
+                    { size = Dict.count fields
+                    , kind = Dict.get "type" fields
+                    , text = Dict.get "value" fields
+                    }
+                is
+                    { size = 2, kind = Just kind, text = Just text } ->
+                        Decode.succeed (JsonScalar { kind = kind, text = text })
+
+                    _ ->
+                        Decode.fail "not a scalar"
+            )
+
+
+-- LOADING
+
+
+loadCases : FileSystem.Permission -> Task String (Array Case)
+loadCases fs =
+    Corpus.load fs
+        |> Task.andThen
+            (\corpus ->
+                corpus
+                    |> Array.keepIf .valid
+                    |> Array.map (loadCase fs)
+                    |> Task.sequence
+            )
+
+
+loadCase : FileSystem.Permission -> File -> Task String Case
+loadCase fs file =
+    let
+        jsonPath =
+            String.dropLast 5 file.path ++ ".json"
+    in
+    FileSystem.readFile fs (Path.fromPosixString (Corpus.root ++ "/" ++ jsonPath))
+        |> Task.mapError FileSystem.errorToString
+        |> Task.andThen
+            (\bytes ->
+                when Maybe.map (Decode.decodeString jsonDecoder) (Bytes.toString bytes) is
+                    Just (Ok expected) ->
+                        Task.succeed
+                            { path = file.path
+                            , expected = expected
+                            , actual = readTable file
+                            }
+
+                    Just (Err error) ->
+                        Task.fail (jsonPath ++ ": " ++ Decode.errorToString error)
+
+                    Nothing ->
+                        Task.fail (jsonPath ++ " is not valid UTF-8")
+            )
+
+
+readTable : File -> Result String Json
+readTable file =
+    when Toml.parseBytes file.bytes is
+        Err error ->
+            Err (Toml.errorToString error)
+
+        Ok doc ->
+            when Table.fromDocument doc is
+                Err error ->
+                    Err (Table.errorToString error)
+
+                Ok table ->
+                    Ok (encodeTable table)

@@ -1,0 +1,618 @@
+module Toml.Table exposing
+    ( Table, Value(..)
+    , fromDocument
+    , get, entries, keys
+    , Error, errorToString
+    )
+
+{-| The other layer: a TOML document as the data it describes.
+
+[`Toml.Ast`](Toml-Ast) is the file. This is what the file *says* -- keys
+resolved, dotted keys expanded, arrays of tables assembled, and every rule the
+grammar cannot express checked on the way. It remembers nothing about
+whitespace, comments or the order things appeared in, because none of that is
+part of what a TOML document means.
+
+An editing API works on the AST. A program that only wants to read a config
+file works on this.
+
+
+## This is where a document is rejected
+
+About a third of the official suite's invalid files are perfectly good syntax.
+`[a]` twice, a key defined twice, a dotted key reaching into a table that a
+header already defined -- a parser cannot see any of that, because none of it is a question about the shape of the
+text. It is all decided here, while the tree is being built, which is the only
+place where enough is known to decide it.
+
+The rules, in the terms this module thinks in: every table remembers **how it
+came to exist**, and what may be done to it afterwards follows from that.
+
+  - A table implied by being a prefix -- the `a` in `[a.b]` -- is *implicit*, and
+    a later `[a]` may still define it.
+  - A table written as `[a]` is *explicit*, and a second `[a]` is an error. So is
+    a dotted key reaching into it from somewhere else.
+  - A table created by a dotted key is closed to headers but still open to more
+    dotted keys beside it, which is what makes `a.b = 1` and `a.c = 2` agree
+    while `a.b = 1` and `[a]` do not.
+  - An inline table is closed to everything the moment its brace shuts.
+
+@docs Table, Value
+
+
+## Building
+
+@docs fromDocument
+
+
+## Reading
+
+@docs get, entries, keys
+
+
+## Errors
+
+@docs Error, errorToString
+
+-}
+
+import Array exposing (Array)
+import Basics exposing (..)
+import BigInt
+import Civil.Date exposing (Date)
+import Civil.DateTime exposing (DateTime)
+import Civil.Time exposing (Time)
+import Dict exposing (Dict)
+import Maybe exposing (Maybe(..))
+import Result exposing (Result(..))
+import String
+import Toml.Ast as Ast exposing (Document, FloatValue)
+
+
+{-| A TOML table: keys to values, in no particular order.
+
+Order is not part of what a TOML document means, and this type does not keep it.
+The AST does, and that is where to look if the order matters.
+
+-}
+type Table
+    = Table
+        { origin : Origin
+        , fields : Dict String Value
+        }
+
+
+{-| A TOML value.
+
+The two array cases are the same thing to a reader and different things to a
+writer: `ArrayValue` came from a `[ ... ]` literal and `TableArrayValue` was
+built up out of `[[ ... ]]` headers. Keeping them apart is what lets the second
+be appended to and the first not.
+
+-}
+type Value
+    = StringValue String
+    | IntegerValue BigInt.BigInt
+    | FloatValue FloatValue
+    | BooleanValue Bool
+    | OffsetDateTimeValue DateTime
+    | LocalDateTimeValue DateTime
+    | LocalDateValue Date
+    | LocalTimeValue Time
+    | ArrayValue (Array Value)
+    | TableValue Table
+    | TableArrayValue (Array Table)
+
+
+{-| How a table came to exist, which decides what may be done to it later.
+-}
+type Origin
+    = Implicit
+    | Explicit
+    | Dotted
+    | Inline
+
+
+{-| Why a document does not mean anything, and where.
+
+`path` is the dotted key the trouble was at, so that a message can say
+`servers.alpha.ip` rather than "a key".
+
+-}
+type alias Error =
+    { path : String
+    , reason : Reason
+    }
+
+
+type Reason
+    = KeyDefinedTwice
+    | TableDefinedTwice
+    | NotATable
+    | TableIsClosed
+    | NotAnArrayOfTables
+
+
+{-| An error as a line of text.
+-}
+errorToString : Error -> String
+errorToString error =
+    (when error.reason is
+        KeyDefinedTwice ->
+            "the key is defined twice"
+
+        TableDefinedTwice ->
+            "the table is defined twice"
+
+        NotATable ->
+            "this is a value, not a table"
+
+        TableIsClosed ->
+            "this table is already complete and cannot be added to"
+
+        NotAnArrayOfTables ->
+            "this is not an array of tables"
+    )
+        ++ ": "
+        ++ error.path
+
+
+
+-- READING
+
+
+{-| The value stored under a key, if there is one.
+-}
+get : String -> Table -> Maybe Value
+get name (Table table) =
+    Dict.get name table.fields
+
+
+{-| Every key and value.
+-}
+entries : Table -> Dict String Value
+entries (Table table) =
+    table.fields
+
+
+{-| Every key.
+-}
+keys : Table -> Array String
+keys (Table table) =
+    Dict.keys table.fields
+
+
+
+-- BUILDING
+
+
+{-| Build the table tree from a parsed document, checking as it goes.
+
+The walk is a fold over the expressions in file order, carrying the root and the
+header currently in effect. That order is the whole reason the rules work:
+`[a]` after `[a.b]` is fine and the reverse is not, and neither statement can be
+judged without knowing what came before it.
+
+-}
+fromDocument : Document -> Result Error Table
+fromDocument doc =
+    Array.foldl step (Ok { root = emptyTable Explicit, current = [] }) doc.expressions
+        |> Result.map .root
+
+
+type alias State =
+    { root : Table
+    , current : Array String
+    }
+
+
+step : Ast.Expression -> Result Error State -> Result Error State
+step expression state =
+    when state is
+        Err error ->
+            Err error
+
+        Ok here ->
+            when expression.content is
+                Ast.Empty _ ->
+                    Ok here
+
+                Ast.Pair fields ->
+                    insertPair here.current (pathOf fields.keyval.key) fields.keyval.value here.root
+                        |> Result.map (\root -> { here | root = root })
+
+                Ast.Header fields ->
+                    let
+                        path =
+                            pathOf fields.header.key
+                    in
+                    when fields.header.kind is
+                        Ast.Std ->
+                            defineTable path here.root
+                                |> Result.map (\root -> { root = root, current = path })
+
+                        Ast.ArrayOfTables ->
+                            appendTable path here.root
+                                |> Result.map (\root -> { root = root, current = path })
+
+
+pathOf : Ast.Key -> Array String
+pathOf name =
+    Array.pushFirst name.first.value (Array.map (\part -> part.key.value) name.rest)
+
+
+
+-- THE THREE THINGS A STATEMENT CAN DO
+
+
+{-| `[a.b]`. The table may already exist, but only if nothing has defined it
+yet -- an implicit prefix from an earlier `[a.b.c]` is the one case where it can.
+-}
+defineTable : Array String -> Table -> Result Error Table
+defineTable path root =
+    updateAt HeaderWalk path root <|
+        \existing ->
+            when existing is
+                Nothing ->
+                    Ok (TableValue (emptyTable Explicit))
+
+                Just (TableValue (Table found)) ->
+                    if found.origin == Implicit then
+                        Ok (TableValue (Table { found | origin = Explicit }))
+
+                    else
+                        Err TableDefinedTwice
+
+                Just _ ->
+                    Err TableDefinedTwice
+
+
+{-| `[[a.b]]`. Either the first item of a new array of tables, or another item
+on the end of one that headers built. An array that came from a `[ ... ]`
+literal is a different kind of thing and cannot be extended this way.
+-}
+appendTable : Array String -> Table -> Result Error Table
+appendTable path root =
+    updateAt HeaderWalk path root <|
+        \existing ->
+            when existing is
+                Nothing ->
+                    Ok (TableArrayValue [ emptyTable Explicit ])
+
+                Just (TableArrayValue items) ->
+                    Ok (TableArrayValue (Array.pushLast (emptyTable Explicit) items))
+
+                Just _ ->
+                    Err NotAnArrayOfTables
+
+
+{-| `a.b = v`, inside whatever table the last header put us in.
+
+Two walks, not one: down the header path, where the tables are already built,
+and then down the dotted key, where they are created as we go and marked as
+having come from a dotted key.
+
+-}
+insertPair : Array String -> Array String -> Ast.Value -> Table -> Result Error Table
+insertPair current path content root =
+    when lower content is
+        Err reason ->
+            Err { path = join path, reason = reason }
+
+        Ok lowered ->
+            descendTo current root <|
+                \table ->
+                    updateAt DottedWalk path table <|
+                        \existing ->
+                            when existing is
+                                Nothing ->
+                                    Ok lowered
+
+                                Just _ ->
+                                    Err KeyDefinedTwice
+
+
+
+-- WALKING THE TREE
+
+
+{-| Which kind of statement is doing the walking, which decides what it may walk
+through. A header may pass through an implicit or an explicit table; a dotted key
+may pass through an implicit one or another dotted one. Neither may pass through
+an inline table, and nothing may pass through a value.
+-}
+type Walk
+    = HeaderWalk
+    | DottedWalk
+
+
+{-| Descend to the table a header named, and change it.
+
+The path exists already, since a header created it, so nothing is built here.
+An array of tables is entered at its last item, which is what makes `[a.b]`
+after `[[a]]` mean the `b` of the most recent `a`.
+
+-}
+descendTo : Array String -> Table -> (Table -> Result Error Table) -> Result Error Table
+descendTo path root change =
+    when Array.popFirst path is
+        Nothing ->
+            change root
+
+        Just { first = name, rest } ->
+            when get name root is
+                Just (TableValue sub) ->
+                    descendTo rest sub change
+                        |> Result.map (\built -> put name (TableValue built) root)
+
+                Just (TableArrayValue items) ->
+                    when Array.popLast items is
+                        Just { last = sub, initial } ->
+                            descendTo rest sub change
+                                |> Result.map
+                                    (\built ->
+                                        put name
+                                            (TableArrayValue (Array.pushLast built initial))
+                                            root
+                                    )
+
+                        Nothing ->
+                            Err { path = name, reason = NotATable }
+
+                _ ->
+                    Err { path = name, reason = NotATable }
+
+
+{-| Walk to the last segment of `path`, creating what is missing, and apply
+`change` to whatever is -- or is not -- there.
+-}
+updateAt :
+    Walk
+    -> Array String
+    -> Table
+    -> (Maybe Value -> Result Reason Value)
+    -> Result Error Table
+updateAt walk path table change =
+    updateHelp walk path [] table change
+
+
+updateHelp :
+    Walk
+    -> Array String
+    -> Array String
+    -> Table
+    -> (Maybe Value -> Result Reason Value)
+    -> Result Error Table
+updateHelp walk path seen table change =
+    when Array.popFirst path is
+        Nothing ->
+            -- Never reached: a header and a key both have at least one segment.
+            Err { path = join seen, reason = NotATable }
+
+        Just { first = name, rest } ->
+            let
+                here =
+                    Array.pushLast name seen
+            in
+            if Array.length rest == 0 then
+                change (get name table)
+                    |> Result.mapError (\reason -> { path = join here, reason = reason })
+                    |> Result.map (\built -> put name built table)
+
+            else
+                when get name table is
+                    Nothing ->
+                        updateHelp walk rest here (emptyTable (created walk)) change
+                            |> Result.map (\built -> put name (TableValue built) table)
+
+                    Just (TableValue sub) ->
+                        if passable walk sub then
+                            updateHelp walk rest here sub change
+                                |> Result.map (\built -> put name (TableValue built) table)
+
+                        else
+                            Err { path = join here, reason = TableIsClosed }
+
+                    Just (TableArrayValue items) ->
+                        when { walk = walk, items = Array.popLast items } is
+                            { walk = HeaderWalk, items = Just { last = sub, initial } } ->
+                                updateHelp walk rest here sub change
+                                    |> Result.map
+                                        (\built ->
+                                            put name
+                                                (TableArrayValue (Array.pushLast built initial))
+                                                table
+                                        )
+
+                            _ ->
+                                -- A dotted key may not reach into an array of
+                                -- tables that headers built.
+                                Err { path = join here, reason = TableIsClosed }
+
+                    Just _ ->
+                        Err { path = join here, reason = NotATable }
+
+
+{-| The origin to give a table this walk has to create along the way.
+-}
+created : Walk -> Origin
+created walk =
+    when walk is
+        HeaderWalk ->
+            Implicit
+
+        DottedWalk ->
+            Dotted
+
+
+{-| Whether this walk may pass *through* a table that already exists.
+
+Passing through is not defining, and the rules are about defining. A header may
+walk through anything that is not sealed -- `[[fruit.apple.seeds]]` is allowed
+after `apple.color = "red"`, because it defines `seeds` and merely visits
+`apple`. What it may not do is *land* on a table somebody has already defined,
+and that is checked when it lands rather than here.
+
+A dotted key is the stricter of the two: it may not reach into a table a header
+defined, which is the rule that makes `[a.b.c]` and a later `b.c.t = ...` an
+error. An inline table is closed to both.
+
+-}
+passable : Walk -> Table -> Bool
+passable walk (Table found) =
+    when walk is
+        HeaderWalk ->
+            found.origin /= Inline
+
+        DottedWalk ->
+            found.origin == Implicit || found.origin == Dotted
+
+
+
+-- LOWERING A VALUE
+
+
+{-| An AST value as the value it denotes.
+
+This is where the source spelling is finally dropped. Nothing is rejected here,
+and the place a reader will look first for a rejection is worth explaining.
+
+
+## Why there is no 64-bit check
+
+The spec says arbitrary 64-bit signed integers "should be accepted and handled
+losslessly. If an integer cannot be represented losslessly, an error must be
+thrown" -- and TOML 1.1 went further, clarifying that a parser is free to support
+any integer or float size at all.
+
+The error is required when a value **cannot be represented**, and a `BigInt` has
+no width, so that never happens here. Rejecting `2^64` would mean refusing a
+document this library can read perfectly well, for a reason that applies to
+parsers built on machine integers and not to this one. The official suite agrees:
+all 42 of its invalid integer cases are about underscores and leading zeroes, and
+not one of them is out of range.
+
+The width question is real, but it belongs one layer out. A Gren `Int` is a
+double and exact only to 2^53, so it is `Decode` -- asked for an `Int`, holding a
+number too big to be one -- that has to say no. `BigInt.fitsSigned 64` is there
+for a caller who wants the stricter reading.
+
+-}
+lower : Ast.Value -> Result Reason Value
+lower content =
+    when content is
+        Ast.StringVal fields ->
+            Ok (StringValue fields.value)
+
+        Ast.IntegerVal fields ->
+            Ok (IntegerValue fields.value)
+
+        Ast.FloatVal fields ->
+            Ok (FloatValue fields.value)
+
+        Ast.BooleanVal fields ->
+            Ok (BooleanValue fields.value)
+
+        Ast.OffsetDateTimeVal fields ->
+            Ok (OffsetDateTimeValue fields.value)
+
+        Ast.LocalDateTimeVal fields ->
+            Ok (LocalDateTimeValue fields.value)
+
+        Ast.LocalDateVal fields ->
+            Ok (LocalDateValue fields.value)
+
+        Ast.LocalTimeVal fields ->
+            Ok (LocalTimeValue fields.value)
+
+        Ast.ArrayVal lit ->
+            Array.foldl
+                (\element soFar ->
+                    Result.map2 Array.pushLast (lower element.value) soFar
+                )
+                (Ok [])
+                lit.elements
+                |> Result.map ArrayValue
+
+        Ast.InlineTableVal table ->
+            lowerInline table
+
+
+{-| An inline table.
+
+The same walk as a keyval uses, so that `{k1 = 1, k1.name = "joe"}` is refused
+for the same reason and by the same code that refuses it spread over two lines.
+The result is sealed: an inline table is closed the moment its brace shuts, and
+nothing may add to it afterwards.
+
+-}
+lowerInline : Ast.InlineTable -> Result Reason Value
+lowerInline table =
+    Array.foldl inlineEntry (Ok (emptyTable Dotted)) table.entries
+        |> Result.map (\built -> TableValue (seal built))
+        |> Result.mapError .reason
+
+
+inlineEntry : Ast.InlineEntry -> Result Error Table -> Result Error Table
+inlineEntry entry soFar =
+    when soFar is
+        Err error ->
+            Err error
+
+        Ok built ->
+            let
+                path =
+                    pathOf entry.keyval.key
+            in
+            when lower entry.keyval.value is
+                Err reason ->
+                    Err { path = join path, reason = reason }
+
+                Ok lowered ->
+                    updateAt DottedWalk path built <|
+                        \existing ->
+                            when existing is
+                                Nothing ->
+                                    Ok lowered
+
+                                Just _ ->
+                                    Err KeyDefinedTwice
+
+
+{-| Close an inline table, and everything an inline table contains.
+-}
+seal : Table -> Table
+seal (Table table) =
+    Table
+        { origin = Inline
+        , fields =
+            Dict.map
+                (\_ content ->
+                    when content is
+                        TableValue sub ->
+                            TableValue (seal sub)
+
+                        _ ->
+                            content
+                )
+                table.fields
+        }
+
+
+
+-- SMALL HELPERS
+
+
+emptyTable : Origin -> Table
+emptyTable origin =
+    Table { origin = origin, fields = Dict.empty }
+
+
+put : String -> Value -> Table -> Table
+put name content (Table table) =
+    Table { table | fields = Dict.set name content table.fields }
+
+
+join : Array String -> String
+join path =
+    String.join "." path
