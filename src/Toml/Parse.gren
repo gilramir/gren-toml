@@ -294,7 +294,7 @@ the leading surrogate rather than the code point when the next character is
 outside the Basic Multilingual Plane -- it decodes the pair into a `uniChar` and
 then tests `unit` anyway. So a predicate that asks what the character *is*
 rejects every astral character, and a comment containing an emoji ends at the
-emoji. See /tmp/gren-parser-surrogate-bug.md.
+emoji. See <https://github.com/gren-lang/core/issues/138>.
 
 Accepting a surrogate half is safe here because the source came through a strict
 UTF-8 decode, which cannot produce an unpaired one. The predicates that run over
