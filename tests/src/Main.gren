@@ -15,6 +15,7 @@ Run with `./run.sh`.
 
 import Decoding exposing (decodingSuite)
 import Editing exposing (editingSuite)
+import Encoding exposing (encodingSuite)
 import FileSystem
 import Init
 import Literals exposing (literalsSuite)
@@ -43,6 +44,7 @@ main =
                 [ numbersSuite
                 , decodingSuite
                 , editingSuite
+                , encodingSuite
                 , literalsSuite
                 , roundTripSuite perms
                 , semanticsSuite perms

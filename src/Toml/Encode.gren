@@ -1,0 +1,457 @@
+module Toml.Encode exposing
+    ( Value, Field, field
+    , toDocument, toString
+    , string, int, bigInt, float, bigDecimal, bool
+    , offsetDateTime, localDateTime, localDate, localTime
+    , array, table, inlineTable, tableArray
+    )
+
+{-| Writing a TOML file from scratch.
+
+    Toml.Encode.toString
+        [ Toml.Encode.field "name" (Toml.Encode.string "widget")
+        , Toml.Encode.field "server"
+            (Toml.Encode.table
+                [ Toml.Encode.field "host" (Toml.Encode.string "example.com")
+                , Toml.Encode.field "port" (Toml.Encode.int 8080)
+                ]
+            )
+        ]
+
+    -->  name = "widget"
+    -->
+    -->  [server]
+    -->  host = "example.com"
+    -->  port = 8080
+
+This is the other direction from [`Toml.Decode`](Toml-Decode), and the other
+half of [`Toml.Edit`](Toml-Edit): editing is for a file that exists, and this is
+for one that does not.
+
+
+## You choose the shape, not a heuristic
+
+A TOML table can be written as a `[header]` section or as `{ inline = "table" }`,
+and an array of tables as `[[header]]` sections or as an array of inline ones.
+Both spellings mean the same thing, so a library has to either guess or ask.
+This one asks: [`table`](#table) and [`tableArray`](#tableArray) produce
+headers, [`inlineTable`](#inlineTable) and [`array`](#array) produce braces and
+brackets. The only place the choice is taken away is inside an array, where a
+header is not available and a table is written inline whatever it was built
+with.
+
+Fields come out in the order you give them, because you chose it. Within a
+table, though, the scalars are written before the sections, since a key written
+after a `[header]` would land inside that header's table rather than beside it.
+
+
+## The style
+
+One space either side of the equals sign, one blank line before each header, no
+indentation, `\\n` line endings, and a final newline. There is no way to change
+any of that, on the grounds that a file this produced has no author to have an
+opinion -- and the moment one does, the file should be read and *edited* rather
+than regenerated, which is what the rest of this package is for.
+
+@docs Value, Field, field
+
+
+## Writing it out
+
+@docs toDocument, toString
+
+
+## Scalars
+
+@docs string, int, bigInt, float, bigDecimal, bool
+@docs offsetDateTime, localDateTime, localDate, localTime
+
+
+## Structures
+
+@docs array, table, inlineTable, tableArray
+
+-}
+
+import Array exposing (Array)
+import Basics exposing (..)
+import BigDecimal exposing (BigDecimal)
+import BigInt exposing (BigInt)
+import Civil.Date exposing (Date)
+import Civil.DateTime exposing (DateTime)
+import Civil.Time exposing (Time)
+import Maybe exposing (Maybe(..))
+import String
+import Toml.Ast as Ast
+    exposing
+        ( Content(..)
+        , Document
+        , Expression
+        , Newline(..)
+        , TableKind(..)
+        )
+import Toml.Literal as Literal
+import Toml.Write as Write
+
+
+{-| A value on its way into a file.
+-}
+type Value
+    = Scalar Ast.Value
+    | Section (Array Field)
+    | Sections (Array (Array Field))
+
+
+{-| A key and the value under it.
+-}
+type alias Field =
+    { key : String
+    , value : Value
+    }
+
+
+{-| A key and the value under it.
+
+    Toml.Encode.field "port" (Toml.Encode.int 8080)
+
+-}
+field : String -> Value -> Field
+field key content =
+    { key = key, value = content }
+
+
+
+-- WRITING IT OUT
+
+
+{-| The fields as a document, which [`Toml.toString`](Toml#toString) will write
+and which [`Toml.Edit`](Toml-Edit) can go on changing.
+-}
+toDocument : Array Field -> Document
+toDocument fields =
+    { hasBom = False
+    , expressions = Array.pushLast endOfFile (section [] fields)
+    }
+
+
+{-| The fields as text.
+-}
+toString : Array Field -> String
+toString fields =
+    Write.document (toDocument fields)
+
+
+{-| The expression a file ends with: nothing, on a line of its own, after the
+last newline. This is what the parser produces for a file that ends with a
+newline, and producing it here is what makes one.
+-}
+endOfFile : Expression
+endOfFile =
+    { indent = "", content = Empty { comment = Nothing }, newline = Nothing }
+
+
+line : Content -> Expression
+line content =
+    { indent = "", content = content, newline = Just Lf }
+
+
+blank : Expression
+blank =
+    line (Empty { comment = Nothing })
+
+
+
+-- THE SHAPE OF THE OUTPUT
+
+
+{-| One table's worth of lines: its own keys, and then its sub-tables.
+
+The order matters and is not a preference. A key written after a `[header]`
+belongs to that header's table, so every key of *this* table has to come first
+or it silently ends up somewhere else.
+
+-}
+section : Array String -> Array Field -> Array Expression
+section path fields =
+    let
+        leaves =
+            Array.keepIf (\it -> not (isSection it.value)) fields
+
+        nested =
+            Array.keepIf (\it -> isSection it.value) fields
+    in
+    Array.prepend
+        (Array.map (keyLine path) leaves)
+        (Array.mapAndFlatten (header path) nested)
+
+
+isSection : Value -> Bool
+isSection content =
+    when content is
+        Scalar _ ->
+            False
+
+        _ ->
+            True
+
+
+keyLine : Array String -> Field -> Expression
+keyLine _ it =
+    line
+        (Pair
+            { keyval =
+                { key = Literal.key [ it.key ]
+                , wsBeforeEq = " "
+                , wsAfterEq = " "
+                , value = flatten it.value
+                }
+            , trailing = ""
+            , comment = Nothing
+            }
+        )
+
+
+{-| A `[header]` section, or a `[[header]]` for every item of a table array.
+-}
+header : Array String -> Field -> Array Expression
+header path it =
+    let
+        here =
+            Array.pushLast it.key path
+    in
+    when it.value is
+        Section fields ->
+            Array.prepend
+                [ blank, line (headerLine Std here) ]
+                (section here fields)
+
+        Sections items ->
+            Array.mapAndFlatten
+                (\fields ->
+                    Array.prepend
+                        [ blank, line (headerLine ArrayOfTables here) ]
+                        (section here fields)
+                )
+                items
+
+        Scalar _ ->
+            []
+
+
+headerLine : TableKind -> Array String -> Content
+headerLine kind path =
+    Header
+        { header =
+            { kind = kind
+            , wsBefore = ""
+            , key = Literal.key path
+            , wsAfter = ""
+            }
+        , trailing = ""
+        , comment = Nothing
+        }
+
+
+{-| A value written in one line, for the places a header is not available:
+inside an array, and inside another inline table.
+-}
+flatten : Value -> Ast.Value
+flatten content =
+    when content is
+        Scalar found ->
+            found
+
+        Section fields ->
+            braces fields
+
+        Sections items ->
+            brackets (Array.map braces items)
+
+
+
+-- SCALARS
+
+
+{-| A string.
+-}
+string : String -> Value
+string text =
+    Scalar (Literal.string text)
+
+
+{-| An integer that fits in a Gren `Int`.
+-}
+int : Int -> Value
+int number =
+    Scalar (Literal.int number)
+
+
+{-| An integer of any size.
+-}
+bigInt : BigInt -> Value
+bigInt number =
+    Scalar (Literal.bigInt number)
+
+
+{-| A float. `inf` and `nan` are written as those words; everything else gets a
+decimal point even when it does not need one, since `1` without one is an
+integer in TOML.
+-}
+float : Float -> Value
+float number =
+    Scalar (Literal.float number)
+
+
+{-| An exact decimal.
+-}
+bigDecimal : BigDecimal -> Value
+bigDecimal number =
+    Scalar (Literal.bigDecimal number)
+
+
+{-| A boolean.
+-}
+bool : Bool -> Value
+bool flag =
+    Scalar (Literal.bool flag)
+
+
+{-| A date and time with an offset.
+-}
+offsetDateTime : DateTime -> Value
+offsetDateTime moment =
+    Scalar (Literal.offsetDateTime moment)
+
+
+{-| A date and time with no offset.
+-}
+localDateTime : DateTime -> Value
+localDateTime moment =
+    Scalar (Literal.localDateTime moment)
+
+
+{-| A date.
+-}
+localDate : Date -> Value
+localDate day =
+    Scalar (Literal.localDate day)
+
+
+{-| A time of day.
+-}
+localTime : Time -> Value
+localTime clock =
+    Scalar (Literal.localTime clock)
+
+
+
+-- STRUCTURES
+
+
+{-| An array, on one line: `[1, 2, 3]`.
+
+Tables inside it are written inline, since there is no header to give them.
+
+-}
+array : Array Value -> Value
+array items =
+    Scalar (brackets (Array.map flatten items))
+
+
+{-| A table written as a `[header]` section.
+
+    Toml.Encode.table [ Toml.Encode.field "port" (Toml.Encode.int 80) ]
+
+    -->  [server]
+    -->  port = 80
+
+Except inside an array, where there is no header to be had and it comes out as
+`{ port = 80 }`.
+
+-}
+table : Array Field -> Value
+table fields =
+    Section fields
+
+
+{-| A table written on one line: `{ port = 80 }`.
+-}
+inlineTable : Array Field -> Value
+inlineTable fields =
+    Scalar (braces fields)
+
+
+{-| An array of tables, written as a `[[header]]` for each.
+
+    Toml.Encode.tableArray
+        [ [ Toml.Encode.field "name" (Toml.Encode.string "alpha") ]
+        , [ Toml.Encode.field "name" (Toml.Encode.string "beta") ]
+        ]
+
+    -->  [[peer]]
+    -->  name = "alpha"
+    -->
+    -->  [[peer]]
+    -->  name = "beta"
+
+-}
+tableArray : Array (Array Field) -> Value
+tableArray items =
+    Sections items
+
+
+
+-- THE ONE-LINE FORMS
+
+
+{-| `[a, b, c]`, with a space after each comma and none inside the brackets.
+-}
+brackets : Array Ast.Value -> Ast.Value
+brackets items =
+    Ast.ArrayVal
+        { elements =
+            Array.indexedMap
+                (\index item ->
+                    { before = spacing (index > 0)
+                    , value = item
+                    , after = []
+                    , comma = index < Array.length items - 1
+                    }
+                )
+                items
+        , trailing = []
+        }
+
+
+{-| `{ a = 1, b = 2 }`, with a space inside each brace. `{}` when empty, since a
+space inside an empty one would be an odd thing to write.
+-}
+braces : Array Field -> Ast.Value
+braces fields =
+    Ast.InlineTableVal
+        { entries =
+            Array.indexedMap
+                (\index it ->
+                    { before = spacing True
+                    , keyval =
+                        { key = Literal.key [ it.key ]
+                        , wsBeforeEq = " "
+                        , wsAfterEq = " "
+                        , value = flatten it.value
+                        }
+                    , after = []
+                    , comma = index < Array.length fields - 1
+                    }
+                )
+                fields
+        , trailing = spacing (Array.length fields > 0)
+        }
+
+
+spacing : Bool -> Ast.Trivia
+spacing wanted =
+    if wanted then
+        [ Ast.Spaces " " ]
+
+    else
+        []

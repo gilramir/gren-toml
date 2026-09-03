@@ -16,6 +16,9 @@ Modules, outermost first:
 - `Toml.Table` — the semantic layer, and where a document gets rejected.
 - `Toml.Decode` — reading a file into your own types.
 - `Toml.Edit` — changing a file in place, on the AST.
+- `Toml.Encode` — building a file from nothing.
+- `Toml.Literal` — spelling a value that has no source text yet. Shared by the
+  two above so they cannot disagree about how to write a float.
 - `Toml.Parse` — the grammar, hand-written against `String.Parser.Advanced`.
 - `Toml.Write` — the AST back to text. Not exposed.
 - `Toml.Number`, `Toml.Strings` — reading a literal into its value. Not exposed.
@@ -27,7 +30,7 @@ Everything runs inside devbox; `gren` and node 22 are not on `PATH` otherwise.
 ```sh
 devbox run build    # compile the package
 devbox run docs     # check the doc comments parse
-devbox run test     # tests/run.sh: 55 checks, 714 of them corpus files, ~0.8s
+devbox run test     # tests/run.sh: 71 checks, 714 of them corpus files, ~0.8s
 ```
 
 Format sources after editing them, especially after scripted edits:
@@ -65,6 +68,17 @@ place that restores them, and every edit goes through it:
 Both were caught by the editing suite comparing whole files rather than the
 value that changed. Keep it that way: "the edit was wrong" is not the failure
 mode this package has, "everything else moved" is.
+
+## Toml.Encode's two rules that look cosmetic and are not
+
+**A table's own keys go before its sections.** A key written after a `[header]`
+belongs to that header's table. Reordering the two lines does not just make the
+output uglier, it moves the key. The suite checks this by reading the value back
+out, not by comparing text.
+
+**A float always gets a decimal point.** `1` without one is an *integer* in
+TOML, so `Encode.float 1.0` writing `a = 1` would round-trip as the wrong type.
+Also checked by reading it back.
 
 ## The two layers must not blur
 

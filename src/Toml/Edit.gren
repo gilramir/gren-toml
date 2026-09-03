@@ -57,7 +57,10 @@ no lines to insert into -- so it is drawn here rather than guessed at.
 ## Values to put in
 
 Each of these builds the value *and* the text for it, since a value that was not
-read from a file has no text of its own yet.
+read from a file has no text of its own yet. They are
+[`Toml.Literal`](Toml-Literal)'s, offered here so that an edit needs one import
+rather than two, and shared with [`Toml.Encode`](Toml-Encode) so that the two
+cannot disagree about how to spell a float.
 
 @docs string, int, bigInt, float, bigDecimal, bool
 @docs offsetDateTime, localDateTime, localDate, localTime
@@ -85,7 +88,7 @@ import Toml.Ast as Ast
         , TableKind(..)
         , Value(..)
         )
-import Toml.Strings as Strings
+import Toml.Literal as Literal
 
 
 
@@ -125,7 +128,7 @@ paths document =
         (\expression header ->
             when expression.content is
                 Pair fields ->
-                    Just (Array.prepend header (keyPath fields.keyval.key))
+                    Just (Array.prepend header (Literal.path fields.keyval.key))
 
                 _ ->
                     Nothing
@@ -310,7 +313,7 @@ under : Array String -> Array String -> Expression -> Bool
 under path header expression =
     when expression.content is
         Header fields ->
-            prefixOf path (keyPath fields.header.key)
+            prefixOf path (Literal.path fields.header.key)
 
         _ ->
             prefixOf path header
@@ -404,7 +407,7 @@ indexOf path document =
         (\expression header ->
             when expression.content is
                 Pair fields ->
-                    Array.prepend header (keyPath fields.keyval.key) == path
+                    Array.prepend header (Literal.path fields.keyval.key) == path
 
                 _ ->
                     False
@@ -448,7 +451,7 @@ headers expressions =
                 next =
                     when expression.content is
                         Header fields ->
-                            keyPath fields.header.key
+                            Literal.path fields.header.key
 
                         _ ->
                             soFar.current
@@ -516,7 +519,7 @@ insert path content document =
             Maybe.withDefault "" (Array.last path)
 
         pair =
-            { key = keyFor [ leaf ]
+            { key = Literal.key [ leaf ]
             , wsBeforeEq = " "
             , wsAfterEq = " "
             , value = content
@@ -602,7 +605,7 @@ append tablePath pair document =
                             { header =
                                 { kind = Std
                                 , wsBefore = ""
-                                , key = keyFor tablePath
+                                , key = Literal.key tablePath
                                 , wsAfter = ""
                                 }
                             , trailing = ""
@@ -631,155 +634,76 @@ styleOf document =
 
 
 
--- KEYS
-
-
-keyPath : Key -> Array String
-keyPath name =
-    Array.prepend [ name.first.value ] (Array.map (\part -> part.key.value) name.rest)
-
-
-keyFor : Array String -> Key
-keyFor path =
-    { first = simpleKeyFor (Maybe.withDefault "" (Array.first path))
-    , rest =
-        Array.dropFirst 1 path
-            |> Array.map
-                (\name ->
-                    { wsBefore = "", wsAfter = "", key = simpleKeyFor name }
-                )
-    }
-
-
-{-| A key part, written bare when the grammar allows and quoted when it does not.
--}
-simpleKeyFor : String -> SimpleKey
-simpleKeyFor name =
-    { raw =
-        if Strings.isBareKey name then
-            name
-
-        else
-            Strings.escape name
-    , value = name
-    }
-
-
-
 -- VALUES
 
 
 {-| A string.
 -}
 string : String -> Value
-string text =
-    StringVal { raw = Strings.escape text, value = text }
+string =
+    Literal.string
 
 
 {-| An integer that fits in a Gren `Int`.
 -}
 int : Int -> Value
-int number =
-    bigInt (BigInt.fromInt number)
+int =
+    Literal.int
 
 
 {-| An integer of any size.
 -}
 bigInt : BigInt -> Value
-bigInt number =
-    IntegerVal { raw = BigInt.toString number, value = number }
+bigInt =
+    Literal.bigInt
 
 
-{-| A float.
-
-`inf` and `nan` are written as those words. Everything else is written with a
-decimal point even when it does not need one, because `1` without it is an
-integer in TOML and this function was asked for a float.
-
+{-| A float. `inf` and `nan` are written as those words; everything else gets a
+decimal point even when it does not need one, since `1` without one is an
+integer in TOML.
 -}
 float : Float -> Value
-float number =
-    if Basics.isNaN number then
-        FloatVal { raw = "nan", value = Ast.NotANumber Ast.Positive }
-
-    else if Basics.isInfinite number then
-        if number > 0 then
-            FloatVal { raw = "inf", value = Ast.Infinite Ast.Positive }
-
-        else
-            FloatVal { raw = "-inf", value = Ast.Infinite Ast.Negative }
-
-    else
-        when BigDecimal.fromFloat number is
-            Just exact ->
-                bigDecimal exact
-
-            Nothing ->
-                FloatVal { raw = "nan", value = Ast.NotANumber Ast.Positive }
+float =
+    Literal.float
 
 
-{-| An exact decimal, written as it stands.
+{-| An exact decimal.
 -}
 bigDecimal : BigDecimal -> Value
-bigDecimal number =
-    let
-        written =
-            BigDecimal.toString number
-    in
-    FloatVal
-        { raw =
-            if String.contains "." written || String.contains "e" written then
-                written
-
-            else
-                written ++ ".0"
-        , value = Ast.Finite number
-        }
+bigDecimal =
+    Literal.bigDecimal
 
 
 {-| A boolean.
 -}
 bool : Bool -> Value
-bool flag =
-    BooleanVal
-        { raw =
-            if flag then
-                "true"
-
-            else
-                "false"
-        , value = flag
-        }
+bool =
+    Literal.bool
 
 
-{-| A date and time with an offset. Fails over to a local date-time if the value
-has no offset, since that is what it is.
+{-| A date and time with an offset.
 -}
 offsetDateTime : DateTime -> Value
-offsetDateTime moment =
-    if DateTime.isLocal moment then
-        localDateTime moment
-
-    else
-        OffsetDateTimeVal { raw = DateTime.toString moment, value = moment }
+offsetDateTime =
+    Literal.offsetDateTime
 
 
 {-| A date and time with no offset.
 -}
 localDateTime : DateTime -> Value
-localDateTime moment =
-    LocalDateTimeVal { raw = DateTime.toString moment, value = moment }
+localDateTime =
+    Literal.localDateTime
 
 
 {-| A date.
 -}
 localDate : Date -> Value
-localDate day =
-    LocalDateVal { raw = Date.toString day, value = day }
+localDate =
+    Literal.localDate
 
 
 {-| A time of day.
 -}
 localTime : Time -> Value
-localTime clock =
-    LocalTimeVal { raw = CivilTime.toString clock, value = clock }
+localTime =
+    Literal.localTime

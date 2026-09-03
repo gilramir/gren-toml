@@ -45,6 +45,34 @@ The blank line is the escape hatch, and it is worth knowing about: a comment
 block that introduces a whole section rather than the one key beneath it should
 have a blank line under it, or deleting that key will take the heading too.
 
+## Writing one from scratch
+
+```gren
+Toml.Encode.toString
+    [ Toml.Encode.field "name" (Toml.Encode.string "widget")
+    , Toml.Encode.field "server"
+        (Toml.Encode.table
+            [ Toml.Encode.field "host" (Toml.Encode.string "example.com")
+            , Toml.Encode.field "port" (Toml.Encode.int 8080)
+            ]
+        )
+    ]
+```
+
+```toml
+name = "widget"
+
+[server]
+host = "example.com"
+port = 8080
+```
+
+You choose the shape rather than a heuristic choosing it: `table` and
+`tableArray` write `[header]` sections, `inlineTable` and `array` write braces
+and brackets. Fields come out in the order you gave them — except that a table's
+own keys are written before its sections, because a key written after a
+`[header]` would land inside that header's table instead.
+
 ## Two layers, and you pick
 
 **`Toml.Ast`** is the file: a list of expressions in the order they appear,

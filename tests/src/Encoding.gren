@@ -1,0 +1,279 @@
+module Encoding exposing (encodingSuite)
+
+{-| Writing a TOML file from scratch.
+
+Two questions, and the second is the one that matters:
+
+  - Does it produce the text it says it does? Checked exactly, line by line,
+    because "the style" is a promise and an undocumented change to it is a
+    change to everybody's diffs.
+  - Does what it produced mean what was asked for? Checked by parsing it back
+    and reading the values out. An encoder that writes plausible-looking TOML
+    that says the wrong thing is the failure worth guarding against, and only a
+    round trip finds it.
+
+@docs encodingSuite
+
+-}
+
+import Array exposing (Array)
+import Basics exposing (..)
+import BigInt
+import Expect
+import Maybe exposing (Maybe(..))
+import Result exposing (Result(..))
+import String
+import Task
+import Test.Runner.UnitNode as U
+import Toml
+import Toml.Decode as Decode
+import Toml.Encode as Encode exposing (field)
+
+
+{-| A document with one of everything in it.
+-}
+sample : Array Encode.Field
+sample =
+    [ field "name" (Encode.string "widget")
+    , field "retries" (Encode.int 3)
+    , field "ratio" (Encode.float 0.5)
+    , field "tags" (Encode.array [ Encode.string "a", Encode.string "b" ])
+    , field "point" (Encode.inlineTable [ field "x" (Encode.int 1), field "y" (Encode.int 2) ])
+    , field "server"
+        (Encode.table
+            [ field "host" (Encode.string "example.com")
+            , field "port" (Encode.int 8080)
+            , field "tls" (Encode.table [ field "enabled" (Encode.bool True) ])
+            ]
+        )
+    , field "peer"
+        (Encode.tableArray
+            [ [ field "name" (Encode.string "alpha") ]
+            , [ field "name" (Encode.string "beta") ]
+            ]
+        )
+    ]
+
+
+lines : Array String -> String
+lines found =
+    String.join "\n" found
+
+
+{-| Read a value back out of encoded text, so a test can say what the file
+*means* rather than what it looks like.
+-}
+readBack : Array Encode.Field -> Decode.Decoder a -> Result String a
+readBack fields decoder =
+    Decode.fromString decoder (Encode.toString fields)
+        |> Result.mapError Decode.errorToString
+
+
+{-| -}
+encodingSuite : U.Suite
+encodingSuite =
+    U.suite
+        { name = "Encoding"
+        , setUpSuite = U.noSuiteFixture
+        , tearDownSuite = U.noTearDown
+        , setUp = \_ -> Task.succeed {}
+        , tearDown = U.noTearDown
+        , tests =
+            -- THE STYLE, EXACTLY
+            [ U.test "a whole document comes out in the documented style" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (lines
+                            [ "name = \"widget\""
+                            , "retries = 3"
+                            , "ratio = 0.5"
+                            , "tags = [\"a\", \"b\"]"
+                            , "point = { x = 1, y = 2 }"
+                            , ""
+                            , "[server]"
+                            , "host = \"example.com\""
+                            , "port = 8080"
+                            , ""
+                            , "[server.tls]"
+                            , "enabled = true"
+                            , ""
+                            , "[[peer]]"
+                            , "name = \"alpha\""
+                            , ""
+                            , "[[peer]]"
+                            , "name = \"beta\""
+                            , ""
+                            ]
+                        )
+                        (Encode.toString sample)
+                    )
+            , U.test "no fields is an empty file" <| \_ ->
+                Task.succeed (Expect.equal "" (Encode.toString []))
+            , U.test "empty structures keep their braces and brackets" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (lines [ "a = []", "b = {}", "" ])
+                        (Encode.toString
+                            [ field "a" (Encode.array [])
+                            , field "b" (Encode.inlineTable [])
+                            ]
+                        )
+                    )
+            -- THE ORDER THAT IS NOT A PREFERENCE
+            , U.test "keys are written before sections, whatever order they were given in" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (lines
+                            [ "after = 2"
+                            , ""
+                            , "[nested]"
+                            , "inside = 1"
+                            , ""
+                            ]
+                        )
+                        (Encode.toString
+                            [ field "nested" (Encode.table [ field "inside" (Encode.int 1) ])
+                            , field "after" (Encode.int 2)
+                            ]
+                        )
+                    )
+            , U.test "and that is not cosmetic: `after` really is a top-level key" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok 2)
+                        (readBack
+                            [ field "nested" (Encode.table [ field "inside" (Encode.int 1) ])
+                            , field "after" (Encode.int 2)
+                            ]
+                            (Decode.field "after" Decode.int)
+                        )
+                    )
+            -- INSIDE AN ARRAY THERE IS NO HEADER TO BE HAD
+            , U.test "a table inside an array is written inline" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (lines [ "a = [{ x = 1 }, { x = 2 }]", "" ])
+                        (Encode.toString
+                            [ field "a"
+                                (Encode.array
+                                    [ Encode.table [ field "x" (Encode.int 1) ]
+                                    , Encode.table [ field "x" (Encode.int 2) ]
+                                    ]
+                                )
+                            ]
+                        )
+                    )
+            -- SPELLING VALUES THAT HAVE NO SOURCE TEXT YET
+            , U.test "a float always gets a decimal point, or it would be an integer" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (lines [ "a = 1.0", "b = 0.5", "c = -2.0", "" ])
+                        (Encode.toString
+                            [ field "a" (Encode.float 1.0)
+                            , field "b" (Encode.float 0.5)
+                            , field "c" (Encode.float -2.0)
+                            ]
+                        )
+                    )
+            , U.test "and it reads back as a float rather than an integer" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok 1.0)
+                        (readBack [ field "a" (Encode.float 1.0) ]
+                            (Decode.field "a" Decode.float)
+                        )
+                    )
+            , U.test "inf and nan are written as those words" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (lines [ "a = inf", "b = -inf", "c = nan", "" ])
+                        (Encode.toString
+                            [ field "a" (Encode.float (1 / 0))
+                            , field "b" (Encode.float (-1 / 0))
+                            , field "c" (Encode.float (0 / 0))
+                            ]
+                        )
+                    )
+            , U.test "a big integer keeps every digit" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (Ok "9223372036854775807")
+                        (readBack
+                            [ field "a"
+                                (Encode.bigInt
+                                    (Maybe.withDefault BigInt.zero
+                                        (BigInt.fromString "9223372036854775807")
+                                    )
+                                )
+                            ]
+                            (Decode.field "a" Decode.bigInt |> Decode.map BigInt.toString)
+                        )
+                    )
+            , U.test "a key that cannot be bare is quoted" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (lines [ "\"a.b\" = 1", "\"\" = 2", "", "[\"has space\"]", "x = 3", "" ])
+                        (Encode.toString
+                            [ field "a.b" (Encode.int 1)
+                            , field "" (Encode.int 2)
+                            , field "has space" (Encode.table [ field "x" (Encode.int 3) ])
+                            ]
+                        )
+                    )
+            , U.test "and a string that needs escaping gets it" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (lines [ "a = \"line\\nbreak\"", "b = \"quote\\\" and \\\\\"", "c = \"日本語\"", "" ])
+                        (Encode.toString
+                            [ field "a" (Encode.string "line\nbreak")
+                            , field "b" (Encode.string "quote\" and \\")
+                            , field "c" (Encode.string "日本語")
+                            ]
+                        )
+                    )
+            -- WHAT IT WROTE IS WHAT IT MEANT
+            , U.test "the whole sample reads back as the values it was built from" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        { name = Ok "widget"
+                        , retries = Ok 3
+                        , host = Ok "example.com"
+                        , tls = Ok True
+                        , peers = Ok [ "alpha", "beta" ]
+                        , pointX = Ok 1
+                        , tags = Ok [ "a", "b" ]
+                        }
+                        { name = readBack sample (Decode.field "name" Decode.string)
+                        , retries = readBack sample (Decode.field "retries" Decode.int)
+                        , host = readBack sample (Decode.at [ "server", "host" ] Decode.string)
+                        , tls = readBack sample (Decode.at [ "server", "tls", "enabled" ] Decode.bool)
+                        , peers =
+                            readBack sample
+                                (Decode.field "peer"
+                                    (Decode.array (Decode.field "name" Decode.string))
+                                )
+                        , pointX = readBack sample (Decode.at [ "point", "x" ] Decode.int)
+                        , tags = readBack sample (Decode.field "tags" (Decode.array Decode.string))
+                        }
+                    )
+            , U.test "a key that had to be quoted still reads back under its own name" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok 1)
+                        (readBack [ field "a.b" (Encode.int 1) ]
+                            (Decode.field "a.b" Decode.int)
+                        )
+                    )
+            , U.test "a string with a newline in it survives the round trip" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok "line\nbreak\tand tab")
+                        (readBack [ field "a" (Encode.string "line\nbreak\tand tab") ]
+                            (Decode.field "a" Decode.string)
+                        )
+                    )
+            -- AND THE RESULT IS SOMETHING Toml.Edit CAN GO ON WORKING WITH
+            , U.test "what comes out is a document, not just text" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (lines [ "a = 1", "" ])
+                        (Toml.toString (Encode.toDocument [ field "a" (Encode.int 1) ]))
+                    )
+            ]
+        }

@@ -1,0 +1,194 @@
+module Toml.Literal exposing
+    ( string, int, bigInt, float, bigDecimal, bool
+    , offsetDateTime, localDateTime, localDate, localTime
+    , key, simpleKey, path
+    )
+
+{-| Writing a value that was not read from a file.
+
+Every node in the AST carries the text it was written as, which is what makes a
+document that came from a file go back byte for byte. A value a program has just
+made up has no such text yet, so something has to choose it, and this is where
+that choosing is done -- once, so that `Toml.Edit` and `Toml.Encode` cannot
+disagree about how to spell a float.
+
+The choices are the plain ones: a bare key when the grammar allows and a quoted
+one when it does not, decimal for integers, and only the escapes a string
+actually needs.
+
+@docs string, int, bigInt, float, bigDecimal, bool
+@docs offsetDateTime, localDateTime, localDate, localTime
+@docs key, simpleKey, path
+
+-}
+
+import Array exposing (Array)
+import Basics exposing (..)
+import BigDecimal exposing (BigDecimal)
+import BigInt exposing (BigInt)
+import Civil.Date as Date exposing (Date)
+import Civil.DateTime as DateTime exposing (DateTime)
+import Civil.Time as CivilTime exposing (Time)
+import Maybe exposing (Maybe(..))
+import String
+import Toml.Ast as Ast exposing (Key, SimpleKey, Value(..))
+import Toml.Strings as Strings
+
+
+-- KEYS
+
+
+{-| The parts of a key, as the table tree names them.
+-}
+path : Key -> Array String
+path name =
+    Array.prepend [ name.first.value ] (Array.map (\part -> part.key.value) name.rest)
+
+
+{-| A whole key from its parts.
+-}
+key : Array String -> Key
+key parts =
+    { first = simpleKey (Maybe.withDefault "" (Array.first parts))
+    , rest =
+        Array.dropFirst 1 parts
+            |> Array.map
+                (\name ->
+                    { wsBefore = "", wsAfter = "", key = simpleKey name }
+                )
+    }
+
+
+{-| One part of a key, written bare when the grammar allows and quoted when it
+does not.
+-}
+simpleKey : String -> SimpleKey
+simpleKey name =
+    { raw =
+        if Strings.isBareKey name then
+            name
+
+        else
+            Strings.escape name
+    , value = name
+    }
+
+
+
+-- VALUES
+
+
+{-| A string.
+-}
+string : String -> Value
+string text =
+    StringVal { raw = Strings.escape text, value = text }
+
+
+{-| An integer that fits in a Gren `Int`.
+-}
+int : Int -> Value
+int number =
+    bigInt (BigInt.fromInt number)
+
+
+{-| An integer of any size.
+-}
+bigInt : BigInt -> Value
+bigInt number =
+    IntegerVal { raw = BigInt.toString number, value = number }
+
+
+{-| A float.
+
+`inf` and `nan` are written as those words. Everything else is written with a
+decimal point even when it does not need one, because `1` without it is an
+integer in TOML and this function was asked for a float.
+
+-}
+float : Float -> Value
+float number =
+    if Basics.isNaN number then
+        FloatVal { raw = "nan", value = Ast.NotANumber Ast.Positive }
+
+    else if Basics.isInfinite number then
+        if number > 0 then
+            FloatVal { raw = "inf", value = Ast.Infinite Ast.Positive }
+
+        else
+            FloatVal { raw = "-inf", value = Ast.Infinite Ast.Negative }
+
+    else
+        when BigDecimal.fromFloat number is
+            Just exact ->
+                bigDecimal exact
+
+            Nothing ->
+                FloatVal { raw = "nan", value = Ast.NotANumber Ast.Positive }
+
+
+{-| An exact decimal, written as it stands.
+-}
+bigDecimal : BigDecimal -> Value
+bigDecimal number =
+    let
+        written =
+            BigDecimal.toString number
+    in
+    FloatVal
+        { raw =
+            if String.contains "." written || String.contains "e" written then
+                written
+
+            else
+                written ++ ".0"
+        , value = Ast.Finite number
+        }
+
+
+{-| A boolean.
+-}
+bool : Bool -> Value
+bool flag =
+    BooleanVal
+        { raw =
+            if flag then
+                "true"
+
+            else
+                "false"
+        , value = flag
+        }
+
+
+{-| A date and time with an offset. Fails over to a local date-time if the value
+has no offset, since that is what it is.
+-}
+offsetDateTime : DateTime -> Value
+offsetDateTime moment =
+    if DateTime.isLocal moment then
+        localDateTime moment
+
+    else
+        OffsetDateTimeVal { raw = DateTime.toString moment, value = moment }
+
+
+{-| A date and time with no offset.
+-}
+localDateTime : DateTime -> Value
+localDateTime moment =
+    LocalDateTimeVal { raw = DateTime.toString moment, value = moment }
+
+
+{-| A date.
+-}
+localDate : Date -> Value
+localDate day =
+    LocalDateVal { raw = Date.toString day, value = day }
+
+
+{-| A time of day.
+-}
+localTime : Time -> Value
+localTime clock =
+    LocalTimeVal { raw = CivilTime.toString clock, value = clock }
