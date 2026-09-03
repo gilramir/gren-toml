@@ -1,0 +1,284 @@
+module Numbers exposing (numbersSuite)
+
+{-| Every integer and float in the official TOML test suite.
+
+72 values that must parse and 89 that must not, lifted out of `toml-test` and
+filtered to the `files-toml-1.1.0` manifest. Most of the invalid ones are about
+one of two rules, which is why they are worth this much attention: where an
+underscore may go, and which leading zeroes the grammar allows.
+
+The comparison is numeric, not textual. `toml-test` writes its expected floats
+as `float64` has already rounded them -- `3e1_4` comes back as `3.0e14` and
+`-0.0` as `-0` -- so both sides are parsed and compared as values. What is being
+checked here is the reading, not the writing; the writing is checked by the
+round-trip suite, which compares whole files byte for byte.
+
+The invalid cases have to be refused by *both* `integer` and `float`, since the
+parser will try both.
+
+@docs numbersSuite
+
+-}
+
+import Array exposing (Array)
+import Basics exposing (..)
+import BigDecimal
+import BigInt
+import Expect
+import Maybe exposing (Maybe(..))
+import String
+import Task
+import Test.Runner.UnitNode as U
+import Toml.Ast as Ast exposing (FloatValue(..), Sign(..))
+import Toml.Number as Number
+
+
+type alias Good =
+    { kind : String, text : String, want : String, file : String }
+
+
+type alias Bad =
+    { text : String, file : String }
+
+
+good : Array Good
+good =
+    [ { kind = "integer", text = "9_007_199_254_740_991", want = "9007199254740991", file = "valid/integer/float64-max.toml" }
+    , { kind = "integer", text = "-9_007_199_254_740_991", want = "-9007199254740991", file = "valid/integer/float64-max.toml" }
+    , { kind = "integer", text = "42", want = "42", file = "valid/integer/integer.toml" }
+    , { kind = "integer", text = "-42", want = "-42", file = "valid/integer/integer.toml" }
+    , { kind = "integer", text = "+42", want = "42", file = "valid/integer/integer.toml" }
+    , { kind = "integer", text = "0", want = "0", file = "valid/integer/integer.toml" }
+    , { kind = "integer", text = "0b11010110", want = "214", file = "valid/integer/literals.toml" }
+    , { kind = "integer", text = "0b1_0_1", want = "5", file = "valid/integer/literals.toml" }
+    , { kind = "integer", text = "0xDEADBEEF", want = "3735928559", file = "valid/integer/literals.toml" }
+    , { kind = "integer", text = "0xdeadbeef", want = "3735928559", file = "valid/integer/literals.toml" }
+    , { kind = "integer", text = "0xdead_beef", want = "3735928559", file = "valid/integer/literals.toml" }
+    , { kind = "integer", text = "0x00987", want = "2439", file = "valid/integer/literals.toml" }
+    , { kind = "integer", text = "0o01234567", want = "342391", file = "valid/integer/literals.toml" }
+    , { kind = "integer", text = "0o755", want = "493", file = "valid/integer/literals.toml" }
+    , { kind = "integer", text = "0o7_6_5", want = "501", file = "valid/integer/literals.toml" }
+    , { kind = "integer", text = "9223372036854775807", want = "9223372036854775807", file = "valid/integer/long.toml" }
+    , { kind = "integer", text = "-9223372036854775808", want = "-9223372036854775808", file = "valid/integer/long.toml" }
+    , { kind = "integer", text = "1_000", want = "1000", file = "valid/integer/underscore.toml" }
+    , { kind = "integer", text = "1_1_1_1", want = "1111", file = "valid/integer/underscore.toml" }
+    , { kind = "integer", text = "0o00", want = "0", file = "valid/integer/zero.toml" }
+    , { kind = "integer", text = "0o00000", want = "0", file = "valid/integer/zero.toml" }
+    , { kind = "integer", text = "0b0", want = "0", file = "valid/integer/zero.toml" }
+    , { kind = "integer", text = "0b00", want = "0", file = "valid/integer/zero.toml" }
+    , { kind = "integer", text = "0b00000", want = "0", file = "valid/integer/zero.toml" }
+    , { kind = "integer", text = "0", want = "0", file = "valid/integer/zero.toml" }
+    , { kind = "integer", text = "+0", want = "0", file = "valid/integer/zero.toml" }
+    , { kind = "integer", text = "-0", want = "0", file = "valid/integer/zero.toml" }
+    , { kind = "integer", text = "0x0", want = "0", file = "valid/integer/zero.toml" }
+    , { kind = "integer", text = "0x00", want = "0", file = "valid/integer/zero.toml" }
+    , { kind = "integer", text = "0x00000", want = "0", file = "valid/integer/zero.toml" }
+    , { kind = "integer", text = "0o0", want = "0", file = "valid/integer/zero.toml" }
+    , { kind = "float", text = "3E2", want = "300", file = "valid/float/exponent-upper.toml" }
+    , { kind = "float", text = "3.1E2", want = "310", file = "valid/float/exponent-upper.toml" }
+    , { kind = "float", text = "-1E-1", want = "-0.1", file = "valid/float/exponent-upper.toml" }
+    , { kind = "float", text = "3E-2", want = "0.03", file = "valid/float/exponent-upper.toml" }
+    , { kind = "float", text = "3E+2", want = "300", file = "valid/float/exponent-upper.toml" }
+    , { kind = "float", text = "0E2", want = "0", file = "valid/float/exponent-upper.toml" }
+    , { kind = "float", text = "3E0", want = "3", file = "valid/float/exponent-upper.toml" }
+    , { kind = "float", text = "+0E2", want = "0", file = "valid/float/exponent-upper.toml" }
+    , { kind = "float", text = "3e2", want = "300", file = "valid/float/exponent.toml" }
+    , { kind = "float", text = "3.1e2", want = "310", file = "valid/float/exponent.toml" }
+    , { kind = "float", text = "-1e-1", want = "-0.1", file = "valid/float/exponent.toml" }
+    , { kind = "float", text = "3e-2", want = "0.03", file = "valid/float/exponent.toml" }
+    , { kind = "float", text = "3e+2", want = "300", file = "valid/float/exponent.toml" }
+    , { kind = "float", text = "0e2", want = "0", file = "valid/float/exponent.toml" }
+    , { kind = "float", text = "3e0", want = "3", file = "valid/float/exponent.toml" }
+    , { kind = "float", text = "+0e2", want = "0", file = "valid/float/exponent.toml" }
+    , { kind = "float", text = "-3.14", want = "-3.14", file = "valid/float/float.toml" }
+    , { kind = "float", text = "3.14", want = "3.14", file = "valid/float/float.toml" }
+    , { kind = "float", text = "+3.14", want = "3.14", file = "valid/float/float.toml" }
+    , { kind = "float", text = "0.123", want = "0.123", file = "valid/float/float.toml" }
+    , { kind = "float", text = "0.0123", want = "0.0123", file = "valid/float/float.toml" }
+    , { kind = "float", text = "inf", want = "inf", file = "valid/float/inf-and-nan.toml" }
+    , { kind = "float", text = "-inf", want = "-inf", file = "valid/float/inf-and-nan.toml" }
+    , { kind = "float", text = "+inf", want = "inf", file = "valid/float/inf-and-nan.toml" }
+    , { kind = "float", text = "nan", want = "nan", file = "valid/float/inf-and-nan.toml" }
+    , { kind = "float", text = "-nan", want = "nan", file = "valid/float/inf-and-nan.toml" }
+    , { kind = "float", text = "+nan", want = "nan", file = "valid/float/inf-and-nan.toml" }
+    , { kind = "float", text = "3.141592653589793", want = "3.141592653589793", file = "valid/float/long.toml" }
+    , { kind = "float", text = "-3.141592653589793", want = "-3.141592653589793", file = "valid/float/long.toml" }
+    , { kind = "float", text = "9_007_199_254_740_991.0", want = "9007199254740991", file = "valid/float/max-int.toml" }
+    , { kind = "float", text = "-9_007_199_254_740_991.0", want = "-9007199254740991", file = "valid/float/max-int.toml" }
+    , { kind = "float", text = "3141.592_7", want = "3141.5927", file = "valid/float/underscore.toml" }
+    , { kind = "float", text = "3_141.5927", want = "3141.5927", file = "valid/float/underscore.toml" }
+    , { kind = "float", text = "3e1_4", want = "3.0e14", file = "valid/float/underscore.toml" }
+    , { kind = "float", text = "0e0", want = "0", file = "valid/float/zero.toml" }
+    , { kind = "float", text = "-0e0", want = "-0", file = "valid/float/zero.toml" }
+    , { kind = "float", text = "+0e0", want = "0", file = "valid/float/zero.toml" }
+    , { kind = "float", text = "0e00", want = "0", file = "valid/float/zero.toml" }
+    , { kind = "float", text = "-0.0", want = "-0", file = "valid/float/zero.toml" }
+    , { kind = "float", text = "+0.0", want = "0", file = "valid/float/zero.toml" }
+    , { kind = "float", text = "0.0", want = "0", file = "valid/float/zero.toml" }
+    ]
+
+
+bad : Array Bad
+bad =
+    [ { text = "1٠", file = "invalid/integer/arabic-zero-01.toml" }
+    , { text = "1_0٠", file = "invalid/integer/arabic-zero-02.toml" }
+    , { text = "٠.1", file = "invalid/integer/arabic-zero-03.toml" }
+    , { text = "٠e0", file = "invalid/integer/arabic-zero-04.toml" }
+    , { text = "0B0", file = "invalid/integer/capital-bin.toml" }
+    , { text = "0X1", file = "invalid/integer/capital-hex.toml" }
+    , { text = "0O0", file = "invalid/integer/capital-oct.toml" }
+    , { text = "--99", file = "invalid/integer/double-sign-nex.toml" }
+    , { text = "++99", file = "invalid/integer/double-sign-plus.toml" }
+    , { text = "1__23", file = "invalid/integer/double-us.toml" }
+    , { text = "0b", file = "invalid/integer/incomplete-bin.toml" }
+    , { text = "0x", file = "invalid/integer/incomplete-hex.toml" }
+    , { text = "0o", file = "invalid/integer/incomplete-oct.toml" }
+    , { text = "0b0012", file = "invalid/integer/invalid-bin.toml" }
+    , { text = "0xaafz", file = "invalid/integer/invalid-hex-01.toml" }
+    , { text = "0xgabba00f1", file = "invalid/integer/invalid-hex-02.toml" }
+    , { text = "0x-1", file = "invalid/integer/invalid-hex-03.toml" }
+    , { text = "0o778", file = "invalid/integer/invalid-oct.toml" }
+    , { text = "_0b1", file = "invalid/integer/leading-us-bin.toml" }
+    , { text = "_0x1", file = "invalid/integer/leading-us-hex.toml" }
+    , { text = "_0o1", file = "invalid/integer/leading-us-oct.toml" }
+    , { text = "_123", file = "invalid/integer/leading-us.toml" }
+    , { text = "01", file = "invalid/integer/leading-zero-01.toml" }
+    , { text = "00", file = "invalid/integer/leading-zero-02.toml" }
+    , { text = "0_0", file = "invalid/integer/leading-zero-03.toml" }
+    , { text = "-01", file = "invalid/integer/leading-zero-sign-01.toml" }
+    , { text = "+01", file = "invalid/integer/leading-zero-sign-02.toml" }
+    , { text = "+0_1", file = "invalid/integer/leading-zero-sign-03.toml" }
+    , { text = "-0b11010110", file = "invalid/integer/negative-bin.toml" }
+    , { text = "-0xff", file = "invalid/integer/negative-hex.toml" }
+    , { text = "-0o755", file = "invalid/integer/negative-oct.toml" }
+    , { text = "+0b11010110", file = "invalid/integer/positive-bin.toml" }
+    , { text = "+0xff", file = "invalid/integer/positive-hex.toml" }
+    , { text = "+0o755", file = "invalid/integer/positive-oct.toml" }
+    , { text = "42 the ultimate answer?", file = "invalid/integer/text-after-integer.toml" }
+    , { text = "0b1_", file = "invalid/integer/trailing-us-bin.toml" }
+    , { text = "0x1_", file = "invalid/integer/trailing-us-hex.toml" }
+    , { text = "0o1_", file = "invalid/integer/trailing-us-oct.toml" }
+    , { text = "123_", file = "invalid/integer/trailing-us.toml" }
+    , { text = "0b_1", file = "invalid/integer/us-after-bin.toml" }
+    , { text = "0x_1", file = "invalid/integer/us-after-hex.toml" }
+    , { text = "0o_1", file = "invalid/integer/us-after-oct.toml" }
+    , { text = "1.٠", file = "invalid/float/arabic-zero-01.toml" }
+    , { text = "٠", file = "invalid/float/arabic-zero-02.toml" }
+    , { text = "1e٠", file = "invalid/float/arabic-zero-03.toml" }
+    , { text = "+٠", file = "invalid/float/arabic-zero-04.toml" }
+    , { text = "0..1", file = "invalid/float/double-dot-01.toml" }
+    , { text = "0.1.2", file = "invalid/float/double-dot-02.toml" }
+    , { text = "1e2.3", file = "invalid/float/exp-dot-01.toml" }
+    , { text = "1.e2", file = "invalid/float/exp-dot-02.toml" }
+    , { text = "3.e+20", file = "invalid/float/exp-dot-03.toml" }
+    , { text = "1ee2", file = "invalid/float/exp-double-e-01.toml" }
+    , { text = "1e2e3", file = "invalid/float/exp-double-e-02.toml" }
+    , { text = "1e__23", file = "invalid/float/exp-double-us.toml" }
+    , { text = "1e_23", file = "invalid/float/exp-leading-us.toml" }
+    , { text = "1_e2", file = "invalid/float/exp-trailing-us-01.toml" }
+    , { text = "1.2_e2", file = "invalid/float/exp-trailing-us-02.toml" }
+    , { text = "1e23_", file = "invalid/float/exp-trailing-us.toml" }
+    , { text = "Inf", file = "invalid/float/inf-capital.toml" }
+    , { text = "in", file = "invalid/float/inf-incomplete-01.toml" }
+    , { text = "+in", file = "invalid/float/inf-incomplete-02.toml" }
+    , { text = "-in", file = "invalid/float/inf-incomplete-03.toml" }
+    , { text = "in_f", file = "invalid/float/inf_underscore.toml" }
+    , { text = "-.12345", file = "invalid/float/leading-dot-neg.toml" }
+    , { text = "+.12345", file = "invalid/float/leading-dot-plus.toml" }
+    , { text = ".12345", file = "invalid/float/leading-dot.toml" }
+    , { text = "_1.2", file = "invalid/float/leading-us.toml" }
+    , { text = "-03.14", file = "invalid/float/leading-zero-neg.toml" }
+    , { text = "+03.14", file = "invalid/float/leading-zero-plus.toml" }
+    , { text = "03.14", file = "invalid/float/leading-zero.toml" }
+    , { text = "NaN", file = "invalid/float/nan-capital.toml" }
+    , { text = "na", file = "invalid/float/nan-incomplete-01.toml" }
+    , { text = "+na", file = "invalid/float/nan-incomplete-02.toml" }
+    , { text = "-na", file = "invalid/float/nan-incomplete-03.toml" }
+    , { text = "na_n", file = "invalid/float/nan_underscore.toml" }
+    , { text = "1.", file = "invalid/float/trailing-dot-01.toml" }
+    , { text = "1.", file = "invalid/float/trailing-dot-02.toml" }
+    , { text = "-1.", file = "invalid/float/trailing-dot-min.toml" }
+    , { text = "+1.", file = "invalid/float/trailing-dot-plus.toml" }
+    , { text = "1.", file = "invalid/float/trailing-dot.toml" }
+    , { text = "0.e", file = "invalid/float/trailing-exp-dot.toml" }
+    , { text = "0.0e-", file = "invalid/float/trailing-exp-minus.toml" }
+    , { text = "0.0e+", file = "invalid/float/trailing-exp-plus.toml" }
+    , { text = "0.0E", file = "invalid/float/trailing-exp.toml" }
+    , { text = "1_e2", file = "invalid/float/trailing-us-exp-01.toml" }
+    , { text = "1.2_e2", file = "invalid/float/trailing-us-exp-02.toml" }
+    , { text = "1.2_", file = "invalid/float/trailing-us.toml" }
+    , { text = "1._2", file = "invalid/float/us-after-dot.toml" }
+    , { text = "1_.2", file = "invalid/float/us-before-dot.toml" }
+    ]
+
+
+{-| Whether the value read out of the text is the value the suite expects.
+Numerically: the expected string goes through the same reader.
+-}
+matches : Good -> Bool
+matches row =
+    if row.kind == "integer" then
+        Maybe.map2 (\got want -> BigInt.compare got want == EQ)
+            (Number.integer row.text)
+            (BigInt.fromString row.want)
+            |> Maybe.withDefault False
+
+    else
+        when Number.float row.text is
+            Just (Finite got) ->
+                BigDecimal.fromString row.want
+                    |> Maybe.map (\want -> BigDecimal.compare got want == EQ)
+                    |> Maybe.withDefault False
+
+            Just (Infinite Positive) ->
+                row.want == "inf"
+
+            Just (Infinite Negative) ->
+                row.want == "-inf"
+
+            Just (NotANumber _) ->
+                row.want == "nan"
+
+            Nothing ->
+                False
+
+
+{-| -}
+numbersSuite : U.Suite
+numbersSuite =
+    U.suite
+        { name = "Numbers"
+        , setUpSuite = U.noSuiteFixture
+        , tearDownSuite = U.noTearDown
+        , setUp = \_ -> Task.succeed {}
+        , tearDown = U.noTearDown
+        , tests =
+            -- A generated table that came out empty would pass everything
+            -- below it without checking anything.
+            [ U.test "the tables are the size toml-test says they are" <| \_ ->
+                Task.succeed
+                    (Expect.equal { good = 72, bad = 89 }
+                        { good = Array.length good, bad = Array.length bad }
+                    )
+            , U.test "every number toml-test accepts reads as the expected value" <| \_ ->
+                Task.succeed
+                    (Expect.equal []
+                        (good
+                            |> Array.keepIf (\row -> not (matches row))
+                            |> Array.map (\row -> row.file ++ ": " ++ row.text ++ ", wanted " ++ row.want)
+                        )
+                    )
+            , U.test "and every one it rejects is refused as both an integer and a float" <| \_ ->
+                Task.succeed
+                    (Expect.equal []
+                        (bad
+                            |> Array.keepIf
+                                (\row ->
+                                    Number.integer row.text /= Nothing
+                                        || Number.float row.text /= Nothing
+                                )
+                            |> Array.map (\row -> row.file ++ ": " ++ row.text)
+                        )
+                    )
+            ]
+        }

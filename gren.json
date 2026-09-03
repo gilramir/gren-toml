@@ -1,0 +1,17 @@
+{
+    "type": "package",
+    "platform": "common",
+    "name": "gilramir/gren-toml",
+    "summary": "A TOML 1.1 parser that preserves comments and formatting",
+    "license": "ISC",
+    "version": "1.0.0",
+    "exposed-modules": [
+        "Toml.Ast"
+    ],
+    "gren-version": "0.6.0 <= v < 0.7.0",
+    "dependencies": {
+        "gilramir/gren-bignum": "1.0.0 <= v < 2.0.0",
+        "gilramir/gren-civil-time": "local:../gren-civil-time",
+        "gren-lang/core": "7.4.0 <= v < 8.0.0"
+    }
+}

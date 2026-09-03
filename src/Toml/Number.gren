@@ -1,0 +1,299 @@
+module Toml.Number exposing (integer, float)
+
+{-| Reading TOML's integers and floats out of the text they were written as.
+
+Both take the whole literal and give back a value or nothing. They are strict:
+the string has to be a TOML number and nothing else, because that is what the
+caller has already established by chomping it. Everything the ABNF says about
+where an underscore may go and which leading zeroes are allowed is checked
+here, since about ninety of the suite's invalid cases are nothing but that.
+
+Neither function keeps the text. `0x1F`, `31` and `1_000` are three spellings
+the parser has to write back exactly, so the AST stores the source next to the
+value rather than asking these to remember it.
+
+@docs integer, float
+
+-}
+
+import BigDecimal exposing (BigDecimal)
+import BigInt exposing (BigInt)
+import Char
+import Maybe exposing (Maybe(..))
+import String
+import Toml.Ast as Ast exposing (FloatValue, Sign(..))
+
+
+{-| Read a TOML integer: decimal with an optional sign, or one of the three
+prefixed forms, with underscores between digits.
+
+    Toml.Number.integer "1_000" |> Maybe.map BigInt.toString
+    --> Just "1000"
+
+    Toml.Number.integer "0xdead_beef" |> Maybe.map BigInt.toString
+    --> Just "3735928559"
+
+The value is a `BigInt` and so has no width. TOML asks for 64 bits, which is
+`BigInt.fitsSigned 64` and is the lowering pass's business rather than this
+one's -- reading the number and deciding whether it fits are different
+questions, and only the first has one right answer.
+
+`Nothing` for a leading zero, a misplaced underscore, a sign on a prefixed
+form, or an uppercase prefix, all of which the grammar forbids:
+
+    Toml.Number.integer "01"     --> Nothing
+    Toml.Number.integer "1__0"   --> Nothing
+    Toml.Number.integer "+0x1"   --> Nothing
+    Toml.Number.integer "0X1"    --> Nothing
+
+-}
+integer : String -> Maybe BigInt
+integer text =
+    if String.startsWith "0x" text then
+        prefixed 16 Char.isHexDigit text
+
+    else if String.startsWith "0o" text then
+        prefixed 8 (isDigitUpTo '7') text
+
+    else if String.startsWith "0b" text then
+        prefixed 2 (isDigitUpTo '1') text
+
+    else
+        let
+            { sign, body } =
+                splitSign text
+        in
+        decimalInt body
+            |> Maybe.map (\digits -> sign ++ digits)
+            |> Maybe.andThen BigInt.fromString
+
+
+prefixed : Int -> (Char -> Bool) -> String -> Maybe BigInt
+prefixed base isDigit text =
+    -- The ABNF spells the prefixes as byte sequences and hangs no sign off
+    -- them, so `0X1` and `+0x1` are not integers.
+    String.dropFirst 2 text
+        |> run { isDigit = isDigit, allowLeadingZero = True }
+        |> Maybe.andThen (BigInt.fromStringWithBase base)
+
+
+{-| `unsigned-dec-int`: one digit, or a nonzero digit and then more. The second
+form is why `01` is not an integer and `0` is.
+-}
+decimalInt : String -> Maybe String
+decimalInt body =
+    run { isDigit = Char.isDigit, allowLeadingZero = False } body
+
+
+{-| Read a TOML float: a decimal with a fraction, an exponent, or both, or one
+of the four special values.
+
+    Toml.Number.float "3.14_15" |> Maybe.map describe
+    --> Just "3.1415"
+
+    Toml.Number.float "-inf" |> Maybe.map describe
+    --> Just "-inf"
+
+The finite ones are `BigDecimal`s and so are exact: `0.1` is `0.1` here and not
+the nearest double to it. `inf` and `nan` are not `BigDecimal` values at all and
+sit beside it in [`Toml.Ast.FloatValue`](Toml-Ast#FloatValue), with the sign
+they were written with, because the file has to be written back as it was.
+
+`Nothing` for a fraction or exponent with no digits, an integer part with a
+leading zero, or a capitalised `inf`, `nan` or prefix:
+
+    Toml.Number.float "1."     --> Nothing
+    Toml.Number.float ".1"     --> Nothing
+    Toml.Number.float "1e"     --> Nothing
+    Toml.Number.float "01.0"   --> Nothing
+    Toml.Number.float "Inf"    --> Nothing
+
+-}
+float : String -> Maybe FloatValue
+float text =
+    let
+        { sign, body } =
+            splitSign text
+    in
+    if body == "inf" then
+        Just (Ast.Infinite (signOf sign))
+
+    else if body == "nan" then
+        Just (Ast.NotANumber (signOf sign))
+
+    else
+        Maybe.map Ast.Finite (finite sign body)
+
+
+signOf : String -> Sign
+signOf sign =
+    if sign == "-" then
+        Negative
+
+    else
+        Positive
+
+
+{-| `float = float-int-part ( exp / frac [ exp ] )`. The parentheses are the
+whole rule: a float that is only an integer part is an integer, so at least one
+of the two has to be there.
+-}
+finite : String -> String -> Maybe BigDecimal
+finite sign body =
+    let
+        { first = intPart, rest = afterInt } =
+            splitOn (\c -> c == '.' || c == 'e' || c == 'E') body
+    in
+    if afterInt == "" then
+        Nothing
+
+    else
+        Maybe.andThen
+            (\intDigits ->
+                Maybe.map
+                    (\tail -> sign ++ intDigits ++ tail)
+                    (fracAndExponent afterInt)
+            )
+            (decimalInt intPart)
+            |> Maybe.andThen BigDecimal.fromString
+
+
+{-| Everything from the decimal point or the `e` onwards, normalised to digits
+that `BigDecimal.fromString` will take.
+-}
+fracAndExponent : String -> Maybe String
+fracAndExponent text =
+    if String.startsWith "." text then
+        let
+            { first = fracPart, rest = afterFrac } =
+                splitOn (\c -> c == 'e' || c == 'E') (String.dropFirst 1 text)
+        in
+        Maybe.map2
+            (\fracDigits expText -> "." ++ fracDigits ++ expText)
+            (zeroPrefixable fracPart)
+            (if afterFrac == "" then
+                Just ""
+
+             else
+                exponent afterFrac
+            )
+
+    else
+        exponent text
+
+
+{-| `exp = "e" float-exp-part`. The `e` is a quoted string in the ABNF and so
+is case insensitive, unlike the `0x` of a hex integer, which is not.
+-}
+exponent : String -> Maybe String
+exponent text =
+    let
+        { sign, body } =
+            splitSign (String.dropFirst 1 text)
+    in
+    Maybe.map (\digits -> "e" ++ sign ++ digits) (zeroPrefixable body)
+
+
+{-| `zero-prefixable-int`: digits with underscores between them, and no rule
+against a leading zero. This is what a fraction and an exponent are made of.
+-}
+zeroPrefixable : String -> Maybe String
+zeroPrefixable body =
+    run { isDigit = Char.isDigit, allowLeadingZero = True } body
+
+
+
+-- THE UNDERSCORE RULE
+
+
+{-| Digits with underscores between them, returned without the underscores.
+
+The grammar shape is `DIGIT *( DIGIT / underscore DIGIT )`, which says three
+things at once: it starts with a digit, an underscore is always followed by a
+digit, and so it cannot end with one. `allowLeadingZero` is the difference
+between that and `unsigned-dec-int`, whose second alternative starts at 1.
+
+-}
+run : { isDigit : Char -> Bool, allowLeadingZero : Bool } -> String -> Maybe String
+run rules body =
+    let
+        step char state =
+            when state is
+                Nothing ->
+                    Nothing
+
+                Just soFar ->
+                    if rules.isDigit char then
+                        Just { digits = String.pushLast char soFar.digits, afterUnderscore = False }
+
+                    else if char == '_' && not soFar.afterUnderscore && soFar.digits /= "" then
+                        Just { soFar | afterUnderscore = True }
+
+                    else
+                        Nothing
+    in
+    when String.popFirst body is
+        Nothing ->
+            Nothing
+
+        Just { first } ->
+            if not (rules.isDigit first) then
+                Nothing
+
+            else if not rules.allowLeadingZero && first == '0' && String.count body /= 1 then
+                Nothing
+
+            else
+                String.foldl step (Just { digits = "", afterUnderscore = False }) body
+                    |> Maybe.andThen
+                        (\soFar ->
+                            if soFar.afterUnderscore then
+                                Nothing
+
+                            else
+                                Just soFar.digits
+                        )
+
+
+
+-- SMALL HELPERS
+
+
+splitSign : String -> { sign : String, body : String }
+splitSign text =
+    if String.startsWith "-" text then
+        { sign = "-", body = String.dropFirst 1 text }
+
+    else if String.startsWith "+" text then
+        { sign = "", body = String.dropFirst 1 text }
+
+    else
+        { sign = "", body = text }
+
+
+splitOn : (Char -> Bool) -> String -> { first : String, rest : String }
+splitOn isMark text =
+    let
+        find index =
+            when String.popFirst (String.dropFirst index text) is
+                Nothing ->
+                    index
+
+                Just { first } ->
+                    if isMark first then
+                        index
+
+                    else
+                        find (index + 1)
+
+        at =
+            find 0
+    in
+    { first = String.takeFirst at text
+    , rest = String.dropFirst at text
+    }
+
+
+isDigitUpTo : Char -> Char -> Bool
+isDigitUpTo highest char =
+    char >= '0' && char <= highest

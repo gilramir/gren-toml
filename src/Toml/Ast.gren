@@ -1,0 +1,343 @@
+module Toml.Ast exposing
+    ( Document, Expression, Content(..)
+    , Comment, Newline(..)
+    , KeyVal, Key, SimpleKey
+    , TableHeader, TableKind(..)
+    , Value(..), FloatValue(..), Sign(..)
+    , ArrayLit, ArrayElement, InlineTable, InlineEntry
+    , Trivia, TriviaPiece(..)
+    )
+
+{-| The syntax of a TOML document, with every character of it kept.
+
+This is the layer an editing API works on. It is a list of expressions in the
+order they appear in the file, and it holds the whitespace and the comments
+between them as text rather than as positions, so that writing an untouched
+document back out produces the same bytes it came from. That is a property of
+the shape of these types and not of anyone's care: there is nowhere for a
+character to go missing.
+
+The other layer is the table tree, which is what a program that only wants to
+read a config file should use. It is built from this one, it is where the rules
+the grammar cannot express are checked, and it does not remember any of this.
+
+
+## Positions are not here, and that is deliberate
+
+A row number goes stale the moment a line is inserted above it. A column number
+survives that but cannot tell a tab from eight spaces, and cannot represent the
+alignment an author chose between two tokens. So instead of a position, each
+node holds the actual string that sat there -- `wsBeforeEq`, `indent`,
+`trailing`. Rows and columns still exist in parse *errors*, where they are
+about a file that is not going to change.
+
+
+## Raw text is kept next to every value
+
+`BigDecimal` reads `1.50` and `1.5` as the same number, which is correct and is
+exactly why a value alone cannot be written back out: the file said `1.50`. The
+same goes for `0x1F`, `1_000_000`, `+7`, the `T` or space in a date-time, and
+`Z` against `z`. Every scalar therefore carries both its source text and its
+meaning. The writer uses the text when the node was not touched and formats
+from the value when it was.
+
+
+## Comment ownership is not here either
+
+Comments are expressions in the list, where the file put them. Which key a
+comment belongs to is a convention rather than a fact, so it is computed from
+this structure rather than baked into it -- otherwise changing the convention
+would mean changing the parser.
+
+@docs Document, Expression, Content
+
+
+## Comments and line endings
+
+@docs Comment, Newline
+
+
+## Keys and values
+
+@docs KeyVal, Key, SimpleKey
+
+
+## Table headers
+
+@docs TableHeader, TableKind
+
+
+## Values
+
+@docs Value, FloatValue, Sign
+
+
+## Arrays and inline tables
+
+@docs ArrayLit, ArrayElement, InlineTable, InlineEntry
+
+
+## Trivia
+
+@docs Trivia, TriviaPiece
+
+-}
+
+import BigDecimal exposing (BigDecimal)
+import BigInt exposing (BigInt)
+import Civil.Date exposing (Date)
+import Civil.DateTime exposing (DateTime)
+import Civil.Time exposing (Time)
+import Maybe exposing (Maybe)
+
+
+
+-- THE DOCUMENT
+
+
+{-| A whole TOML file.
+
+`hasBom` records whether the source began with a byte order mark. It has to be
+stored rather than derived, because decoding UTF-8 removes exactly one leading
+BOM without saying so, and a document that had one must get it back.
+
+-}
+type alias Document =
+    { hasBom : Bool
+    , expressions : Array Expression
+    }
+
+
+{-| One expression, which is one line of the file plus the newline that ended
+it -- except that a value can be an array, an inline table or a multi-line
+string, any of which may run on for many physical lines. `indent` is the
+whitespace before the content began.
+
+`newline` is `Nothing` only on the last expression of a file that does not end
+with one.
+
+-}
+type alias Expression =
+    { indent : String
+    , content : Content
+    , newline : Maybe Newline
+    }
+
+
+{-| What an expression turned out to be. The grammar allows exactly three
+things on a line: nothing, a key and a value, or a table header. All three may
+carry a comment, and the two that are not empty may have whitespace after them.
+-}
+type Content
+    = Empty { comment : Maybe Comment }
+    | Pair { keyval : KeyVal, trailing : String, comment : Maybe Comment }
+    | Header { header : TableHeader, trailing : String, comment : Maybe Comment }
+
+
+{-| The text of a comment, without the `#` that started it and without the
+newline that ended it. It is kept exactly, including any leading space, because
+`# note` and `#note` are different files.
+-}
+type alias Comment =
+    { text : String }
+
+
+{-| Which of the two line endings the grammar allows. TOML has no others, and a
+lone carriage return is not a line ending but an error.
+-}
+type Newline
+    = Lf
+    | CrLf
+
+
+
+-- KEYS AND VALUES
+
+
+{-| A key, an equals sign and a value, with the whitespace around the equals
+sign kept so that a column of aligned assignments stays aligned.
+-}
+type alias KeyVal =
+    { key : Key
+    , wsBeforeEq : String
+    , wsAfterEq : String
+    , value : Value
+    }
+
+
+{-| A key, which is one simple key or several joined by dots.
+
+The dots carry whitespace on both sides, because `a . b = 1` is legal and means
+what `a.b = 1` means. `rest` is empty for an undotted key, which is why the
+first part is separate: there is always at least one.
+
+-}
+type alias Key =
+    { first : SimpleKey
+    , rest : Array { wsBefore : String, wsAfter : String, key : SimpleKey }
+    }
+
+
+{-| One part of a key.
+
+`raw` is the source text, quotes and escapes included; `value` is the string
+the key actually is. For a bare key the two are equal. For `"a\tb"` they are
+not, and it is `value` that decides whether two keys collide.
+
+-}
+type alias SimpleKey =
+    { raw : String
+    , value : String
+    }
+
+
+
+-- TABLE HEADERS
+
+
+{-| A `[table]` or `[[array of tables]]` line, with the whitespace inside the
+brackets kept.
+-}
+type alias TableHeader =
+    { kind : TableKind
+    , wsBefore : String
+    , key : Key
+    , wsAfter : String
+    }
+
+
+{-| Which kind of bracket the header used.
+-}
+type TableKind
+    = Std
+    | ArrayOfTables
+
+
+
+-- VALUES
+
+
+{-| A value, and next to it the text it was written as.
+
+The `raw` of a composite value is not stored, because an array and an inline
+table already hold every character of themselves in their own fields.
+
+-}
+type Value
+    = StringVal { raw : String, value : String }
+    | IntegerVal { raw : String, value : BigInt }
+    | FloatVal { raw : String, value : FloatValue }
+    | BooleanVal { raw : String, value : Bool }
+    | OffsetDateTimeVal { raw : String, value : DateTime }
+    | LocalDateTimeVal { raw : String, value : DateTime }
+    | LocalDateVal { raw : String, value : Date }
+    | LocalTimeVal { raw : String, value : Time }
+    | ArrayVal ArrayLit
+    | InlineTableVal InlineTable
+
+
+{-| A TOML float.
+
+Most of them are exact decimals, which is what `BigDecimal` is for: `0.1` there
+is `0.1` and not `0.1000000000000000055511151231257827`. The other two are not
+numbers at all, and cannot be `BigDecimal` values, so they sit beside it.
+
+TOML writes `+nan` and `-nan` and says nothing about what the sign means. It is
+kept so that the file can be written back as it was.
+
+-}
+type FloatValue
+    = Finite BigDecimal
+    | Infinite Sign
+    | NotANumber Sign
+
+
+{-| Which sign a non-finite float was written with. `nan` with no sign is
+`Positive`, since that is how it is written back.
+-}
+type Sign
+    = Positive
+    | Negative
+
+
+
+-- ARRAYS AND INLINE TABLES
+
+
+{-| An array literal.
+
+Everything between the brackets is here. `trailing` is what sat between the
+last element -- or the opening bracket, in an empty array -- and the closing
+one.
+
+-}
+type alias ArrayLit =
+    { elements : Array ArrayElement
+    , trailing : Trivia
+    }
+
+
+{-| One element of an array, with the trivia on each side of it and whether a
+comma followed.
+
+Only the last element may have `comma = False`; TOML 1.1 allows the trailing
+comma but not a missing interior one.
+
+-}
+type alias ArrayElement =
+    { before : Trivia
+    , value : Value
+    , after : Trivia
+    , comma : Bool
+    }
+
+
+{-| An inline table.
+
+Since TOML 1.1 this is the same shape as an array: newlines, comments and a
+trailing comma are all allowed inside the braces.
+
+-}
+type alias InlineTable =
+    { entries : Array InlineEntry
+    , trailing : Trivia
+    }
+
+
+{-| One entry of an inline table. The same shape as an array element, with a
+key and a value instead of a value.
+-}
+type alias InlineEntry =
+    { before : Trivia
+    , keyval : KeyVal
+    , after : Trivia
+    , comma : Bool
+    }
+
+
+
+-- TRIVIA
+
+
+{-| Whitespace, comments and newlines, in the order they appeared.
+
+This is the grammar's `ws-comment-newline`, which is what may sit between the
+parts of an array or an inline table. Concatenating the pieces gives back the
+source text exactly.
+
+-}
+type alias Trivia =
+    Array TriviaPiece
+
+
+{-| One piece of trivia: a run of spaces and tabs, or the end of a line with an
+optional comment before it.
+
+The two are separate because the grammar is: a comment inside an array has to
+be followed by a newline, so `[1 # note ]` is not a TOML array and `[1 # note`
+followed by `]` on the next line is.
+
+-}
+type TriviaPiece
+    = Spaces String
+    | Break { comment : Maybe Comment, newline : Newline }
