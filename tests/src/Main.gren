@@ -13,6 +13,7 @@ Run with `./run.sh`.
 
 -}
 
+import Decoding exposing (decodingSuite)
 import FileSystem
 import Init
 import Literals exposing (literalsSuite)
@@ -39,6 +40,7 @@ main =
         , suites =
             \perms ->
                 [ numbersSuite
+                , decodingSuite
                 , literalsSuite
                 , roundTripSuite perms
                 , semanticsSuite perms

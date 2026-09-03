@@ -1,0 +1,287 @@
+module Decoding exposing (decodingSuite)
+
+{-| Reading a TOML file into Gren types.
+
+The conformance suites establish that the library reads TOML correctly. This one
+is about the decoder on top: that the combinators compose, that a failure says
+where it happened, and -- the case worth the most attention -- that `int` refuses
+a number it cannot hold rather than handing back one that is nearly right.
+
+@docs decodingSuite
+
+-}
+
+import Array exposing (Array)
+import Basics exposing (..)
+import BigInt
+import Civil.Date as Date
+import Dict
+import Expect
+import Maybe exposing (Maybe(..))
+import Result exposing (Result(..))
+import String
+import Task
+import Test.Runner.UnitNode as U
+import Toml.Decode as Decode exposing (Decoder)
+
+
+{-| A file with one of everything the decoders below ask for.
+
+Written as lines rather than as a multi-line literal so that its indentation is
+its own and not a consequence of where it sits in this file.
+-}
+sample : String
+sample =
+    String.join "\n"
+        [ "# A server, and the things one needs to know about it."
+        , "host = \"example.com\""
+        , "port = 8080"
+        , "debug = false"
+        , "ratio = 0.25"
+        , "started = 1979-05-27T07:32:00Z"
+        , "huge = 9223372036854775807"
+        , ""
+        , "[owner]"
+        , "name = \"Tom\""
+        , "dob = 1979-05-27"
+        , ""
+        , "[limits]"
+        , "cpu = 4"
+        , "memory = 512"
+        , ""
+        , "[[peer]]"
+        , "name = \"alpha\""
+        , "port = 9001"
+        , ""
+        , "[[peer]]"
+        , "name = \"beta\""
+        , "port = 9002"
+        ]
+
+
+type alias Peer =
+    { name : String, port_ : Int }
+
+
+peer : Decoder Peer
+peer =
+    Decode.map2 (\name p -> { name = name, port_ = p })
+        (Decode.field "name" Decode.string)
+        (Decode.field "port" Decode.int)
+
+
+boolText : Bool -> String
+boolText flag =
+    if flag then
+        "true"
+
+    else
+        "false"
+
+
+read : Decoder a -> Result String a
+read decoder =
+    Decode.fromString decoder sample
+        |> Result.mapError Decode.errorToString
+
+
+{-| -}
+decodingSuite : U.Suite
+decodingSuite =
+    U.suite
+        { name = "Decoding"
+        , setUpSuite = U.noSuiteFixture
+        , tearDownSuite = U.noTearDown
+        , setUp = \_ -> Task.succeed {}
+        , tearDown = U.noTearDown
+        , tests =
+            -- THE ORDINARY CASE
+            [ U.test "primitives come out as themselves" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        { host = Ok "example.com"
+                        , port_ = Ok 8080
+                        , debug = Ok False
+                        , ratio = Ok 0.25
+                        }
+                        { host = read (Decode.field "host" Decode.string)
+                        , port_ = read (Decode.field "port" Decode.int)
+                        , debug = read (Decode.field "debug" Decode.bool)
+                        , ratio = read (Decode.field "ratio" Decode.float)
+                        }
+                    )
+            , U.test "a path reaches into a table a header wrote" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        { name = Ok "Tom", cpu = Ok 4, memory = Ok 512 }
+                        { name = read (Decode.at [ "owner", "name" ] Decode.string)
+                        , cpu = read (Decode.at [ "limits", "cpu" ] Decode.int)
+                        , memory = read (Decode.field "limits" (Decode.field "memory" Decode.int))
+                        }
+                    )
+            , U.test "an array of tables decodes like any other array" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (Ok
+                            [ { name = "alpha", port_ = 9001 }
+                            , { name = "beta", port_ = 9002 }
+                            ]
+                        )
+                        (read (Decode.field "peer" (Decode.array peer)))
+                    )
+            , U.test "dict reads a table whose keys are data" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok [ { key = "cpu", value = 4 }, { key = "memory", value = 512 } ])
+                        (read (Decode.field "limits" (Decode.dict Decode.int))
+                            |> Result.map
+                                (Dict.foldl
+                                    (\key content pairs ->
+                                        Array.pushLast { key = key, value = content } pairs
+                                    )
+                                    []
+                                )
+                        )
+                    )
+            , U.test "dates arrive as civil values, not instants" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok "1979-05-27")
+                        (read (Decode.at [ "owner", "dob" ] Decode.localDate)
+                            |> Result.map Date.toString
+                        )
+                    )
+            -- THE INTEGER WIDTH, WHICH IS THE POINT OF bigInt EXISTING
+            , U.test "int refuses a number it cannot hold exactly" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (Err "at huge: 9223372036854775807 does not fit in an Int; use bigInt to read it exactly")
+                        (read (Decode.field "huge" Decode.int))
+                    )
+            , U.test "and bigInt reads the same number without losing a digit" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok "9223372036854775807")
+                        (read (Decode.field "huge" Decode.bigInt)
+                            |> Result.map BigInt.toString
+                        )
+                    )
+            , U.test "while a number that does fit comes through int" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok 8080) (read (Decode.field "port" Decode.int)))
+            -- WHERE IT WENT WRONG
+            , U.test "a failure names the field it happened in" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Err "at owner.name: expected an integer, found a string")
+                        (read (Decode.at [ "owner", "name" ] Decode.int))
+                    )
+            , U.test "and the index, inside an array" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Err "at peer[1].port: expected a string, found an integer")
+                        (read
+                            (Decode.field "peer"
+                                (Decode.array (Decode.field "port" Decode.string))
+                            )
+                        )
+                    )
+            , U.test "a missing key says so" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Err "at nope: no such key")
+                        (read (Decode.field "nope" Decode.string))
+                    )
+            , U.test "asking for a field of something that is not a table" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Err "at host: expected a table, found a string")
+                        (read (Decode.at [ "host", "deeper" ] Decode.string))
+                    )
+            -- THE FORGIVING COMBINATORS, AND WHAT THEY DO NOT FORGIVE
+            , U.test "optionalField is Nothing for an absent key" <| \_ ->
+                Task.succeed
+                    (Expect.equal [ Ok (Just "example.com"), Ok Nothing ]
+                        [ read (Decode.optionalField "host" Decode.string)
+                        , read (Decode.optionalField "nope" Decode.string)
+                        ]
+                    )
+            , U.test "but still an error for a key of the wrong type" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Err "at port: expected a string, found an integer")
+                        (read (Decode.optionalField "port" Decode.string))
+                    )
+            , U.test "maybe forgives that too" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok Nothing)
+                        (read (Decode.maybe (Decode.field "port" Decode.string)))
+                    )
+            , U.test "oneOf takes the first that works" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok "8080")
+                        (read
+                            (Decode.field "port"
+                                (Decode.oneOf
+                                    [ Decode.string
+                                    , Decode.map String.fromInt Decode.int
+                                    ]
+                                )
+                            )
+                        )
+                    )
+            , U.test "and reports all of them when none does" <| \_ ->
+                Task.succeed
+                    (Expect.equal True
+                        (when read (Decode.field "port" (Decode.oneOf [ Decode.string, Decode.map boolText Decode.bool ])) is
+                            Err message ->
+                                String.contains "none of the 2 alternatives" message
+
+                            Ok _ ->
+                                False
+                        )
+                    )
+            -- BUILDING A RECORD
+            , U.test "andMap builds a record of any width" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (Ok { host = "example.com", port_ = 8080, debug = False })
+                        (read
+                            (Decode.succeed
+                                (\host p debug -> { host = host, port_ = p, debug = debug })
+                                |> Decode.andMap (Decode.field "host" Decode.string)
+                                |> Decode.andMap (Decode.field "port" Decode.int)
+                                |> Decode.andMap (Decode.field "debug" Decode.bool)
+                            )
+                        )
+                    )
+            , U.test "andThen decides what to read from what it read" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok "Tom")
+                        (read
+                            (Decode.field "debug" Decode.bool
+                                |> Decode.andThen
+                                    (\debug ->
+                                        if debug then
+                                            Decode.field "host" Decode.string
+
+                                        else
+                                            Decode.at [ "owner", "name" ] Decode.string
+                                    )
+                            )
+                        )
+                    )
+            -- THE FILE ITSELF FAILING
+            , U.test "a syntax error comes back through the decoder" <| \_ ->
+                Task.succeed
+                    (Expect.equal True
+                        (when Decode.fromString Decode.string "a = = 1" is
+                            Err reason ->
+                                String.contains "line 1" (Decode.errorToString reason)
+
+                            Ok _ ->
+                                False
+                        )
+                    )
+            , U.test "and so does a duplicate key" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (Err "the key is defined twice: a")
+                        (Decode.fromString (Decode.field "a" Decode.int) "a = 1\na = 2"
+                            |> Result.mapError Decode.errorToString
+                        )
+                    )
+            ]
+        }
