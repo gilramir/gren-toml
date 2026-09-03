@@ -1,0 +1,117 @@
+module Main exposing (main)
+
+{-| `gren-toml-decoder`: the `toml-test` decoder interface for `gren-toml`.
+
+The contract the official runner expects, and all of it:
+
+  - TOML arrives on stdin.
+  - If it is valid, write the tagged JSON encoding of it to stdout and exit 0.
+  - If it is not, write something to stderr and exit non-zero.
+
+Which is to say this program is plumbing. Everything it could get wrong about
+TOML is in `gren-toml`, and everything it could get wrong about the JSON is in
+`TaggedJson`. What is left here is reading stdin as bytes rather than as text --
+which matters, because nine of the suite's invalid files are invalid precisely
+because they are not UTF-8, and a decoder that reads a `String` has already lost
+them.
+
+The whole stream is collected before anything is decoded, for the same reason: a
+multi-byte sequence split across a chunk boundary would look like an encoding
+error to an incremental decode.
+
+-}
+
+import Argparse.Parser as AP
+import Argparse.PrettyPrinter as PP
+import Argparse.Program as Program
+import Array exposing (Array)
+import Bytes exposing (Bytes)
+import Node
+import Result exposing (Result(..))
+import Stream
+import TaggedJson
+import Task exposing (Task)
+import Toml
+import Toml.Table as Table
+
+
+type Cmd
+    = Decode
+
+
+{-| The tool takes no arguments at all. It is still declared this way so that
+`--help` and `--version` work and read like every other tool here.
+-}
+command : AP.Command {} {} Cmd
+command =
+    { word = ""
+    , arguments = AP.noArgs
+    , flags = AP.noFlags
+    , commonDescription = Nothing
+    , summary = "Read TOML on stdin and write toml-test's tagged JSON on stdout"
+    , example = PP.empty
+    , builder = \_ _ -> Decode
+    }
+
+
+main : Node.SimpleProgram a
+main =
+    Program.runRoot
+        { name = "gren-toml-decoder"
+        , version = "1.0.0"
+        , command = command
+        , onCommand = \env _ -> decode env
+        }
+
+
+decode : Node.Environment -> Task Program.Failure {}
+decode env =
+    readAll env.stdin
+        |> Task.andThen
+            (\source ->
+                when read source is
+                    Err message ->
+                        Task.fail (Program.ExitMessage message)
+
+                    Ok json ->
+                        Stream.writeLineAsBytes json env.stdout
+                            |> Task.map (\_ -> {})
+                            |> Task.onError
+                                (\error ->
+                                    Task.fail
+                                        (Program.ExitMessage (Stream.errorToString error))
+                                )
+            )
+
+
+read : Bytes -> Result String String
+read source =
+    when Toml.parseBytes source is
+        Err error ->
+            Err (Toml.errorToString error)
+
+        Ok document ->
+            when Table.fromDocument document is
+                Err error ->
+                    Err (Table.errorToString error)
+
+                Ok table ->
+                    Ok (TaggedJson.encode table)
+
+
+{-| Every byte of stdin, in one `Bytes`.
+
+Not decoded chunk by chunk: a character whose bytes straddle a chunk boundary
+would be reported as invalid UTF-8, and this program's whole job is to be right
+about which files are invalid.
+
+-}
+readAll : Stream.Readable Bytes -> Task Program.Failure Bytes
+readAll stdin =
+    Stream.readUntilClosed
+        (\chunk chunks -> Ok (Array.pushLast chunk chunks))
+        []
+        stdin
+        |> Task.map Bytes.flatten
+        |> Task.onError
+            (\error -> Task.fail (Program.ExitMessage (Stream.errorToString error)))

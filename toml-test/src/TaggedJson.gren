@@ -1,0 +1,116 @@
+module TaggedJson exposing (encode)
+
+{-| The tagged JSON `toml-test` compares against.
+
+Its shape is deliberately not TOML's: a table is a JSON object, an array is a
+JSON array, and every scalar -- whatever its type -- is an object of exactly two
+string fields, `{"type": ..., "value": ...}`. Making the value always a string is
+what lets the runner compare `9223372036854775807` without a JSON parser
+quietly turning it into a float first.
+
+That is also why this module lives here and not in `gren-toml`. It is a test
+protocol, not something TOML has an opinion about.
+
+@docs encode
+
+-}
+
+import Array
+import BigDecimal
+import BigInt
+import Civil.Date as Date
+import Civil.DateTime as DateTime
+import Civil.Time as CivilTime
+import Dict
+import Json.Encode as Encode
+import String
+import Toml.Ast as Ast
+import Toml.Table as Table
+
+
+{-| A table as the JSON `toml-test` expects on stdout.
+-}
+encode : Table.Table -> String
+encode table =
+    Encode.encode 4 (table_ table)
+
+
+table_ : Table.Table -> Encode.Value
+table_ table =
+    Table.entries table
+        |> Dict.foldl
+            (\name content pairs ->
+                Array.pushLast { key = name, value = value content } pairs
+            )
+            []
+        |> Encode.object
+
+
+value : Table.Value -> Encode.Value
+value content =
+    when content is
+        Table.StringValue text ->
+            scalar "string" text
+
+        Table.IntegerValue whole ->
+            scalar "integer" (BigInt.toString whole)
+
+        Table.FloatValue fractional ->
+            scalar "float" (float fractional)
+
+        Table.BooleanValue flag ->
+            scalar "bool"
+                (if flag then
+                    "true"
+
+                 else
+                    "false"
+                )
+
+        Table.OffsetDateTimeValue moment ->
+            scalar "datetime" (DateTime.toString moment)
+
+        Table.LocalDateTimeValue moment ->
+            scalar "datetime-local" (DateTime.toString moment)
+
+        Table.LocalDateValue day ->
+            scalar "date-local" (Date.toString day)
+
+        Table.LocalTimeValue clock ->
+            scalar "time-local" (CivilTime.toString clock)
+
+        Table.ArrayValue items ->
+            Encode.array value items
+
+        Table.TableValue sub ->
+            table_ sub
+
+        Table.TableArrayValue items ->
+            Encode.array table_ items
+
+
+scalar : String -> String -> Encode.Value
+scalar kind text =
+    Encode.object
+        [ { key = "type", value = Encode.string kind }
+        , { key = "value", value = Encode.string text }
+        ]
+
+
+{-| `toml-test` writes both signs of `nan` as `nan`, and reads the rest with a
+float parser, so an exact decimal is safe to hand it.
+-}
+float : Ast.FloatValue -> String
+float fractional =
+    when fractional is
+        Ast.Finite number ->
+            BigDecimal.toString number
+
+        Ast.Infinite Ast.Positive ->
+            "inf"
+
+        Ast.Infinite Ast.Negative ->
+            "-inf"
+
+        Ast.NotANumber _ ->
+            "nan"
