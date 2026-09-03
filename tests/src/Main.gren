@@ -5,25 +5,39 @@ module Main exposing (main)
   - `Numbers` is every integer and float in the official TOML test suite, the
     ones that must parse and the ones that must not.
   - `Literals` is every string literal in it, likewise, including the
-    multi-line quote cases that decide where a `"""` ends.
+    multi-line quote cases that decide where a triple quote ends.
+  - `RoundTrip` reads all 934 files off the disk, parses them, and writes them
+    back out, which is the property the whole AST is shaped around.
 
 Run with `./run.sh`.
 
 -}
 
+import FileSystem
+import Init
 import Literals exposing (literalsSuite)
 import Node
 import Numbers exposing (numbersSuite)
+import RoundTrip exposing (roundTripSuite)
+import Task
 import Test.Runner.UnitNode as U
 
 
 main : Node.SimpleProgram a
 main =
-    U.run
+    U.runWith
         { name = "gren-toml"
         , version = "1.0.0"
+        , init =
+            \done ->
+                Init.await FileSystem.initialize <| \fs ->
+                    done { fs = fs }
+        , globalSetUp = \_ -> Task.succeed {}
+        , globalTearDown = \_ -> Task.succeed {}
         , suites =
-            [ numbersSuite
-            , literalsSuite
-            ]
+            \perms ->
+                [ numbersSuite
+                , literalsSuite
+                , roundTripSuite perms
+                ]
         }

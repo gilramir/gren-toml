@@ -1,0 +1,256 @@
+module RoundTrip exposing (roundTripSuite)
+
+{-| Parse every file in the official TOML test suite and write it back out.
+
+This is the suite the whole design of [`Toml.Ast`](Toml-Ast) exists to pass. The
+claim is that a document nobody has edited comes back byte for byte, and the
+only way to believe it is to try it on files somebody else wrote: 934 of them,
+from `toml-test`'s 1.1.0 manifest, read off the disk at run time rather than
+baked into this file.
+
+Three things are checked, and they are not the same thing:
+
+  - Every file the suite calls valid **parses**. This is the parser being
+    complete.
+  - Every file the suite calls valid **round-trips**. This is the AST being
+    lossless, which is a separate property: a parser can understand a file
+    perfectly and still forget which column its comment was in.
+  - Every file the suite calls *invalid* that nonetheless parses **also
+    round-trips**. Most of those are invalid for reasons the grammar cannot
+    see -- a duplicate key, a redefined table -- so they are perfectly good
+    syntax, and the round trip has to hold for them too. It is a property of the
+    AST, not a reward for being valid.
+
+The corpus goes through `Toml.parseBytes` rather than `Toml.parse`, because only
+the bytes can say whether a file began with a byte order mark, and two of the
+valid ones do. Nine invalid files never reach the parser at all: they are not
+valid UTF-8, deliberately, and the decode refuses them.
+
+Nothing here asserts that invalid files are rejected. At this layer most of them
+should not be: catching them is the lowering pass's job, and asserting it here
+would be asserting the wrong thing in the wrong place.
+
+@docs roundTripSuite
+
+-}
+
+import Array exposing (Array)
+import Basics exposing (..)
+import Bytes exposing (Bytes)
+import Bytes.Decode
+import Expect
+import FileSystem
+import FileSystem.Path as Path
+import Maybe exposing (Maybe(..))
+import Result exposing (Result(..))
+import String
+import Task exposing (Task)
+import Test.Runner.UnitNode as U
+import Toml
+
+
+{-| Where the vendored suite sits, relative to `tests/`, which is where
+`run.sh` leaves the working directory.
+-}
+root : String
+root =
+    "../../vendor/toml-test/tests"
+
+
+type alias File =
+    { path : String
+    , bytes : Bytes
+    , source : String
+    , valid : Bool
+    }
+
+
+{-| -}
+roundTripSuite : { fs : FileSystem.Permission } -> U.Suite
+roundTripSuite perms =
+    U.suite
+        { name = "RoundTrip"
+        , setUpSuite = loadCorpus perms.fs
+        , tearDownSuite = U.noTearDown
+        , setUp = \corpus -> Task.succeed corpus
+        , tearDown = U.noTearDown
+        , tests =
+            [ U.test "the corpus is the size the manifest says it is" <| \corpus ->
+                Task.succeed
+                    (Expect.equal { valid = 220, invalid = 485 }
+                        { valid = Array.length (Array.keepIf .valid corpus)
+                        , invalid = Array.length (Array.keepIf (\f -> not f.valid) corpus)
+                        }
+                    )
+            , U.test "every valid file parses" <| \corpus ->
+                Task.succeed
+                    (Expect.equal []
+                        (corpus
+                            |> Array.keepIf .valid
+                            |> Array.mapAndKeepJust
+                                (\file ->
+                                    when Toml.parseBytes file.bytes is
+                                        Ok _ ->
+                                            Nothing
+
+                                        Err error ->
+                                            Just (file.path ++ ": " ++ Toml.errorToString error)
+                                )
+                        )
+                    )
+            , U.test "and comes back out of the writer byte for byte" <| \corpus ->
+                Task.succeed
+                    (Expect.equal []
+                        (corpus
+                            |> Array.keepIf .valid
+                            |> Array.mapAndKeepJust roundTrip
+                        )
+                    )
+            , U.test "so does every invalid file whose syntax is fine" <| \corpus ->
+                Task.succeed
+                    (Expect.equal []
+                        (corpus
+                            |> Array.keepIf (\file -> not file.valid)
+                            |> Array.mapAndKeepJust roundTrip
+                        )
+                    )
+            ]
+        }
+
+
+{-| `Nothing` when the file came back unchanged, or when it did not parse at
+all -- whether an invalid file parses is a different question, asked elsewhere.
+-}
+roundTrip : File -> Maybe String
+roundTrip file =
+    when Toml.parseBytes file.bytes is
+        Err _ ->
+            Nothing
+
+        Ok doc ->
+            let
+                written =
+                    Toml.toString doc
+            in
+            if written == file.source then
+                Nothing
+
+            else
+                Just (file.path ++ ": " ++ firstDifference file.source written)
+
+
+{-| Where two strings stop agreeing, with a little of each side, because a
+whole TOML file in an assertion message is not a useful thing to read.
+-}
+firstDifference : String -> String -> String
+firstDifference expected actual =
+    let
+        find index =
+            if index >= String.count expected || index >= String.count actual then
+                index
+
+            else if String.slice index (index + 1) expected == String.slice index (index + 1) actual then
+                find (index + 1)
+
+            else
+                index
+
+        at =
+            find 0
+    in
+    "at offset "
+        ++ String.fromInt at
+        ++ ", expected "
+        ++ excerpt expected at
+        ++ " but wrote "
+        ++ excerpt actual at
+
+
+excerpt : String -> Int -> String
+excerpt text at =
+    "..." ++ String.slice at (at + 24) text ++ "..."
+
+
+-- LOADING
+
+
+loadCorpus : FileSystem.Permission -> Task String (Array File)
+loadCorpus fs =
+    readText fs (root ++ "/files-toml-1.1.0")
+        |> Task.andThen
+            (\manifest ->
+                manifest
+                    |> String.split "\n"
+                    |> Array.keepIf (String.endsWith ".toml")
+                    |> Array.map (readFile fs)
+                    |> Task.sequence
+            )
+        |> Task.map (Array.mapAndKeepJust identity)
+
+
+{-| One file, or `Nothing` if it is not valid UTF-8.
+
+The `invalid/encoding` files are exactly that, deliberately, and they are the
+one group the parser never sees: `Toml.parseBytes` refuses them at the decode.
+There is nothing for this suite to round-trip.
+
+-}
+readFile : FileSystem.Permission -> String -> Task String (Maybe File)
+readFile fs name =
+    FileSystem.readFile fs (Path.fromPosixString (root ++ "/" ++ name))
+        |> Task.mapError FileSystem.errorToString
+        |> Task.map
+            (\bytes ->
+                when Bytes.toString bytes is
+                    Nothing ->
+                        Nothing
+
+                    Just text ->
+                        Just
+                            { path = name
+                            , bytes = bytes
+                            , source = restoreBom bytes ++ text
+                            , valid = String.startsWith "valid/" name
+                            }
+            )
+
+
+readText : FileSystem.Permission -> String -> Task String String
+readText fs name =
+    FileSystem.readFile fs (Path.fromPosixString name)
+        |> Task.mapError FileSystem.errorToString
+        |> Task.andThen
+            (\bytes ->
+                when Bytes.toString bytes is
+                    Just text ->
+                        Task.succeed text
+
+                    Nothing ->
+                        Task.fail (name ++ " is not valid UTF-8")
+            )
+
+
+{-| Decoding removes one leading byte order mark without saying so, so the text
+to compare against is the decoded text with the mark put back. This suite works
+it out from the bytes itself rather than asking `Toml`, which is the point: the
+library's answer is what is under test.
+-}
+restoreBom : Bytes -> String
+restoreBom bytes =
+    let
+        found =
+            Bytes.Decode.decode
+                (Bytes.Decode.map3
+                    (\a b c -> a == 0xEF && b == 0xBB && c == 0xBF)
+                    Bytes.Decode.unsignedInt8
+                    Bytes.Decode.unsignedInt8
+                    Bytes.Decode.unsignedInt8
+                )
+                bytes
+                |> Maybe.withDefault False
+    in
+    if found then
+        "﻿"
+
+    else
+        ""

@@ -93,12 +93,18 @@ def literals(path):
 def gren_string(text):
     """A Gren string literal for this text.
 
+    The escapes match what gren-format normalises to -- \\n, \\r and \\t by name,
+    everything else below space as lowercase four-digit \\u{...} -- so that the
+    generated file needs no reformatting.
+
     Anything above ASCII goes in as itself rather than as a \\u{...} escape.
     That is partly because it reads better and partly because gren 0.6.6
     mis-encodes \\u{FFFF} in a string literal -- it emits the surrogate pair for
     0xFFFF - 0x10000, so the escape yields U+D7FF U+DFFF instead of one
-    character. See /tmp/gren-escape-bug.md. Source files are UTF-8, so writing
-    the character is both correct and unaffected.
+    character -- and those two are not a surrogate pair, so the string comes out
+    one character too long with an unpaired low surrogate in it. See
+    https://github.com/gren-lang/compiler/issues/384. Source files are UTF-8, so
+    writing the character is both correct and unaffected.
     """
     out = []
     for char in text:
@@ -107,8 +113,16 @@ def gren_string(text):
             out.append('\\"')
         elif char == "\\":
             out.append("\\\\")
+        elif char == "\n":
+            out.append("\\n")
+        elif char == "\r":
+            out.append("\\r")
+        elif char == "\t":
+            out.append("\\t")
         elif code < 0x20 or code == 0x7F:
-            out.append("\\u{%04X}" % code)
+            # lowercase hex, four digits: what gren-format normalises to, so
+            # that the generated file is already formatted
+            out.append("\\u{%04x}" % code)
         else:
             out.append(char)
     return "".join(out)

@@ -1,0 +1,240 @@
+module Toml.Write exposing (document, expression, value, key)
+
+{-| Turning the syntactic AST back into text.
+
+There is nothing clever here, and that is the point. Every function is a
+concatenation of the fields of its node, in the order the grammar puts them,
+because those fields already hold every character of the source. Writing a
+document that has not been edited gives back the bytes it was parsed from, and
+the reason is structural: nothing was thrown away, so nothing has to be guessed.
+
+The one thing that is not a field is the byte order mark, which is a property of
+the file rather than of anything in it.
+
+@docs document, expression, value, key
+
+-}
+
+import Array exposing (Array)
+import Basics exposing (..)
+import Maybe exposing (Maybe(..))
+import String
+import Toml.Ast as Ast
+    exposing
+        ( ArrayElement
+        , ArrayLit
+        , Comment
+        , Content(..)
+        , Document
+        , Expression
+        , InlineEntry
+        , InlineTable
+        , Key
+        , KeyVal
+        , Newline(..)
+        , TableHeader
+        , TableKind(..)
+        , Trivia
+        , TriviaPiece(..)
+        , Value(..)
+        )
+
+
+{-| A whole document.
+
+The byte order mark goes back on the front if the source had one. It has to be
+remembered rather than derived: decoding UTF-8 removes exactly one leading mark
+without saying so, and by the time the parser sees a `String` the evidence is
+gone.
+
+-}
+document : Document -> String
+document doc =
+    (if doc.hasBom then
+        "\u{FEFF}"
+
+     else
+        ""
+    )
+        ++ String.join "" (Array.map expression doc.expressions)
+
+
+{-| One expression and the line ending that closed it.
+-}
+expression : Expression -> String
+expression expr =
+    expr.indent
+        ++ content expr.content
+        ++ (when expr.newline is
+                Just nl ->
+                    newline nl
+
+                Nothing ->
+                    ""
+           )
+
+
+content : Content -> String
+content it =
+    when it is
+        Empty fields ->
+            comment fields.comment
+
+        Pair fields ->
+            keyval fields.keyval ++ fields.trailing ++ comment fields.comment
+
+        Header fields ->
+            tableHeader fields.header ++ fields.trailing ++ comment fields.comment
+
+
+comment : Maybe Comment -> String
+comment note =
+    when note is
+        Just found ->
+            "#" ++ found.text
+
+        Nothing ->
+            ""
+
+
+newline : Newline -> String
+newline nl =
+    when nl is
+        Lf ->
+            "\n"
+
+        CrLf ->
+            "\u{000D}\n"
+
+
+keyval : KeyVal -> String
+keyval pair =
+    key pair.key
+        ++ pair.wsBeforeEq
+        ++ "="
+        ++ pair.wsAfterEq
+        ++ value pair.value
+
+
+{-| A key, with the whitespace that sat on either side of each dot.
+-}
+key : Key -> String
+key name =
+    name.first.raw
+        ++ String.join ""
+            (Array.map
+                (\part -> part.wsBefore ++ "." ++ part.wsAfter ++ part.key.raw)
+                name.rest
+            )
+
+
+tableHeader : TableHeader -> String
+tableHeader header =
+    let
+        { open, close } =
+            when header.kind is
+                Std ->
+                    { open = "[", close = "]" }
+
+                ArrayOfTables ->
+                    { open = "[[", close = "]]" }
+    in
+    open ++ header.wsBefore ++ key header.key ++ header.wsAfter ++ close
+
+
+{-| A value.
+
+Every scalar hands back the text it was written as, which is the whole reason
+the AST carries it: `1.50` is `1.50` and not the `1.5` that its `BigDecimal`
+knows it to be. The two composite values have no `raw` of their own because
+their parts already hold all of it.
+
+-}
+value : Value -> String
+value it =
+    when it is
+        StringVal fields ->
+            fields.raw
+
+        IntegerVal fields ->
+            fields.raw
+
+        FloatVal fields ->
+            fields.raw
+
+        BooleanVal fields ->
+            fields.raw
+
+        OffsetDateTimeVal fields ->
+            fields.raw
+
+        LocalDateTimeVal fields ->
+            fields.raw
+
+        LocalDateVal fields ->
+            fields.raw
+
+        LocalTimeVal fields ->
+            fields.raw
+
+        ArrayVal lit ->
+            arrayLit lit
+
+        InlineTableVal table ->
+            inlineTable table
+
+
+arrayLit : ArrayLit -> String
+arrayLit lit =
+    "["
+        ++ String.join "" (Array.map arrayElement lit.elements)
+        ++ trivia lit.trailing
+        ++ "]"
+
+
+arrayElement : ArrayElement -> String
+arrayElement element =
+    trivia element.before
+        ++ value element.value
+        ++ trivia element.after
+        ++ separator element.comma
+
+
+inlineTable : InlineTable -> String
+inlineTable table =
+    "{"
+        ++ String.join "" (Array.map inlineEntry table.entries)
+        ++ trivia table.trailing
+        ++ "}"
+
+
+inlineEntry : InlineEntry -> String
+inlineEntry entry =
+    trivia entry.before
+        ++ keyval entry.keyval
+        ++ trivia entry.after
+        ++ separator entry.comma
+
+
+separator : Bool -> String
+separator present =
+    if present then
+        ","
+
+    else
+        ""
+
+
+trivia : Trivia -> String
+trivia pieces =
+    String.join "" (Array.map triviaPiece pieces)
+
+
+triviaPiece : TriviaPiece -> String
+triviaPiece piece =
+    when piece is
+        Spaces text ->
+            text
+
+        Break fields ->
+            comment fields.comment ++ newline fields.newline

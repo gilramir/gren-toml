@@ -1,0 +1,166 @@
+module Toml exposing
+    ( Document
+    , Error
+    , errorToString
+    , parse
+    , parseBytes
+    , toString
+    )
+
+{-| Reading and writing TOML without losing anything on the way through.
+
+    Toml.parseBytes source
+        |> Result.map Toml.toString
+    --> Ok (the same bytes back)
+
+That round trip is exact for a document nobody has edited, and it is exact
+because of how the AST is shaped rather than because of any effort here: the
+whitespace, the comments and the source spelling of every number are all in it.
+See [`Toml.Ast`](Toml-Ast).
+
+@docs Document
+
+
+## Reading
+
+@docs parse, parseBytes
+
+
+## Writing
+
+@docs toString
+
+
+## Errors
+
+@docs Error, errorToString
+
+-}
+
+import Array
+import Basics exposing (..)
+import Bytes exposing (Bytes)
+import Bytes.Decode
+import Maybe exposing (Maybe(..))
+import Result exposing (Result(..))
+import String
+import String.Parser.Advanced as P
+import Toml.Ast as Ast
+import Toml.Parse as Parse
+import Toml.Write as Write
+
+
+{-| A parsed TOML file. See [`Toml.Ast.Document`](Toml-Ast#Document) for what is
+in one.
+-}
+type alias Document =
+    Ast.Document
+
+
+{-| Read a TOML file from its bytes.
+
+**This is the one to use.** It is the only entry point that can tell a valid
+file from an invalid one, because two of the things that make a TOML file
+invalid are decided before there is a `String` to look at:
+
+  - **The encoding.** `Bytes.toString` is a strict UTF-8 decode, so a file with
+    a bad byte sequence in it -- or a UTF-16 file, or a lone surrogate -- is
+    refused here. By the time a caller holds a `String`, any such error has
+    already been repaired into `U+FFFD`, and `U+FFFD` is a legal TOML character,
+    so it cannot be found again afterwards.
+  - **The byte order mark.** Exactly one leading mark is allowed and is not part
+    of the document. Decoding removes it silently, so this function looks at the
+    first three bytes itself and records what it saw, which is what lets
+    [`toString`](#toString) put it back.
+
+-}
+parseBytes : Bytes -> Result Error Document
+parseBytes bytes =
+    when Bytes.toString bytes is
+        Nothing ->
+            Err { row = 1, col = 1, expecting = "valid UTF-8" }
+
+        Just text ->
+            parse text
+                |> Result.map (\doc -> { doc | hasBom = startsWithBom bytes })
+
+
+{-| Read a TOML file from a string.
+
+Offered for convenience and for callers who already have the text. It cannot
+detect an encoding error, by construction -- see [`parseBytes`](#parseBytes) --
+and a document parsed this way is recorded as having no byte order mark, since
+whatever removed the bytes did not say whether there was one.
+
+-}
+parse : String -> Result Error Document
+parse text =
+    when P.run Parse.document {} text is
+        Ok doc ->
+            Ok doc
+
+        Err deadEnds ->
+            Err (firstError deadEnds)
+
+
+{-| Write a document back out.
+-}
+toString : Document -> String
+toString =
+    Write.document
+
+
+{-| Where the parser stopped and what it wanted there.
+-}
+type alias Error =
+    { row : Int
+    , col : Int
+    , expecting : String
+    }
+
+
+{-| An error as a line of text.
+
+    "line 4, column 9: expected an '=' after the key"
+
+-}
+errorToString : Error -> String
+errorToString error =
+    "line "
+        ++ String.fromInt error.row
+        ++ ", column "
+        ++ String.fromInt error.col
+        ++ ": expected "
+        ++ error.expecting
+
+
+firstError : Array (P.DeadEnd {} Parse.Problem) -> Error
+firstError deadEnds =
+    when Array.first deadEnds is
+        Just deadEnd ->
+            { row = deadEnd.row
+            , col = deadEnd.col
+            , expecting = Parse.problemToString deadEnd.problem
+            }
+
+        Nothing ->
+            { row = 1, col = 1, expecting = "a TOML document" }
+
+
+{-| Whether the first three bytes are a UTF-8 byte order mark.
+
+This has to be asked of the bytes. `Bytes.toString` strips one leading mark as
+part of decoding and does not report it, so a `String` cannot answer.
+
+-}
+startsWithBom : Bytes -> Bool
+startsWithBom bytes =
+    Bytes.Decode.decode
+        (Bytes.Decode.map3
+            (\a b c -> a == 0xEF && b == 0xBB && c == 0xBF)
+            Bytes.Decode.unsignedInt8
+            Bytes.Decode.unsignedInt8
+            Bytes.Decode.unsignedInt8
+        )
+        bytes
+        |> Maybe.withDefault False

@@ -1,0 +1,905 @@
+module Toml.Parse exposing
+    ( Problem(..)
+    , document, expressions
+    , problemToString
+    )
+
+{-| Turning TOML source into the syntactic AST, keeping every character.
+
+This is the grammar in `toml.abnf`, written out by hand against
+`String.Parser.Advanced`. It checks what the grammar can check and nothing more:
+that a file is made of expressions, that a value is one of the eight kinds, that
+a string literal is closed and a table header bracketed. It has no opinion on
+whether a key is defined twice or a table redefined -- those are not syntax, and
+they belong to the pass that builds the table tree.
+
+What it produces round-trips. Every space, every comment, and the source
+spelling of every scalar is in the result, so writing an untouched document back
+out returns the bytes it came from.
+
+
+## The two places the grammar needs a second look
+
+**Where a number ends.** `val` puts date-times, floats and integers behind the
+same first character, and `1979-05-27 07:32:00` has a space in the middle of it.
+So the parser chomps the run of characters a number or a date could be made of,
+and then, if what it has is exactly a `full-date` and a space and a digit
+follow, chomps a second run. The result is handed to the readers as a whole
+string, which is a better division of labour than backtracking through six
+alternatives: `Civil.DateTime` and `Toml.Number` already say yes or no to a
+complete literal.
+
+**Where a triple-quoted string ends.** `mlb-quotes` lets a body contain runs of
+one or two of its own delimiter, so the closing delimiter is the *last* three of
+a run, not the first three. `"""lol\""""""` is a string containing `lol"""`. The
+scanner therefore consumes a whole run of three or more and stops, leaving
+`Toml.Strings` to reject the runs that are too long to be content.
+
+@docs Problem
+
+
+## Parsers
+
+@docs document, expressions
+
+
+## Errors
+
+@docs problemToString
+
+-}
+
+import Array exposing (Array)
+import Basics exposing (..)
+import Char
+import Civil.Date as Date
+import Civil.DateTime as DateTime
+import Civil.Time as CivilTime
+import Maybe exposing (Maybe(..))
+import String
+import String.Parser.Advanced as P exposing (Parser, Step(..))
+import Toml.Ast as Ast
+    exposing
+        ( ArrayElement
+        , ArrayLit
+        , Comment
+        , Content(..)
+        , Document
+        , Expression
+        , InlineEntry
+        , InlineTable
+        , Key
+        , KeyVal
+        , Newline(..)
+        , SimpleKey
+        , TableHeader
+        , TableKind(..)
+        , Trivia
+        , TriviaPiece(..)
+        , Value(..)
+        )
+import Toml.Number as Number
+import Toml.Strings as Strings
+
+
+{-| What the parser was looking for when it gave up.
+
+The three `Malformed` cases carry the text that was chomped, because by the time
+they happen the parser has a whole literal in hand and the useful thing to say
+is which one it could not read.
+
+-}
+type Problem
+    = ExpectingKey
+    | ExpectingEquals
+    | ExpectingValue
+    | ExpectingNewline
+    | ExpectingEndOfFile
+    | ExpectingComment
+    | ExpectingDot
+    | ExpectingArrayOpen
+    | ExpectingArrayClose
+    | ExpectingInlineTableOpen
+    | ExpectingInlineTableClose
+    | ExpectingSeparator
+    | ExpectingTableOpen
+    | ExpectingTableClose
+    | ExpectingStringDelimiter
+    | ExpectingStringCharacter
+    | MalformedString String
+    | MalformedValue String
+    | MalformedKey String
+
+
+{-| A one-line description of a problem, for an error message.
+-}
+problemToString : Problem -> String
+problemToString problem =
+    when problem is
+        ExpectingKey ->
+            "a key"
+
+        ExpectingEquals ->
+            "an '=' after the key"
+
+        ExpectingValue ->
+            "a value"
+
+        ExpectingNewline ->
+            "the end of the line"
+
+        ExpectingEndOfFile ->
+            "the end of the file"
+
+        ExpectingComment ->
+            "a comment"
+
+        ExpectingDot ->
+            "a '.' between key parts"
+
+        ExpectingArrayOpen ->
+            "a '[' opening an array"
+
+        ExpectingArrayClose ->
+            "a ']' closing the array"
+
+        ExpectingInlineTableOpen ->
+            "a '{' opening an inline table"
+
+        ExpectingInlineTableClose ->
+            "a '}' closing the inline table"
+
+        ExpectingSeparator ->
+            "a ',' between elements"
+
+        ExpectingTableOpen ->
+            "a '[' opening a table header"
+
+        ExpectingTableClose ->
+            "a ']' closing the table header"
+
+        ExpectingStringDelimiter ->
+            "a quote opening or closing a string"
+
+        ExpectingStringCharacter ->
+            "a character allowed in a string"
+
+        MalformedString raw ->
+            "a string, but " ++ raw ++ " is not one"
+
+        MalformedValue raw ->
+            "a value, but " ++ raw ++ " is not one"
+
+        MalformedKey raw ->
+            "a key, but " ++ raw ++ " is not one"
+
+
+type alias P a =
+    Parser {} Problem a
+
+
+
+-- THE DOCUMENT
+
+
+{-| A whole file.
+
+`hasBom` is always `False` here: decoding UTF-8 has already removed a leading
+byte order mark without saying so, and only the caller who held the bytes knows
+whether there was one. Any byte order mark that reaches this parser is one that
+was not at the start of the file, and it is rejected as the grammar says.
+
+-}
+document : P Document
+document =
+    P.map (\found -> { hasBom = False, expressions = found }) expressions
+
+
+{-| `toml = expression *( newline expression )`.
+
+Note the shape: expressions and newlines alternate, so a file ending in a
+newline has a final empty expression after it, and an empty file is one empty
+expression. Both fall out of the grammar rather than being special cases, and
+both are what makes the round trip exact.
+
+-}
+expressions : P (Array Expression)
+expressions =
+    P.loop [] expressionsStep
+
+
+expressionsStep : Array Expression -> P (Step (Array Expression) (Array Expression))
+expressionsStep found =
+    expression
+        |> P.andThen
+            (\expr ->
+                P.oneOf
+                    [ newline
+                        |> P.map
+                            (\nl ->
+                                Loop (Array.pushLast { expr | newline = Just nl } found)
+                            )
+                    , P.end ExpectingEndOfFile
+                        |> P.map (\_ -> Done (Array.pushLast expr found))
+                    ]
+            )
+
+
+{-| `expression = ws [ comment ] / ws keyval ws [ comment ] / ws table ws [ comment ]`
+-}
+expression : P Expression
+expression =
+    P.succeed
+        (\indent content ->
+            { indent = indent, content = content, newline = Nothing }
+        )
+        |> P.keep ws
+        |> P.keep contentOfLine
+
+
+contentOfLine : P Content
+contentOfLine =
+    P.oneOf
+        [ P.succeed
+            (\header trailing note -> Header { header = header, trailing = trailing, comment = note })
+            |> P.keep tableHeader
+            |> P.keep ws
+            |> P.keep (optional comment)
+        , P.succeed
+            (\pair trailing note -> Pair { keyval = pair, trailing = trailing, comment = note })
+            |> P.keep keyval
+            |> P.keep ws
+            |> P.keep (optional comment)
+        , P.succeed (\note -> Empty { comment = note })
+            |> P.keep (optional comment)
+        ]
+
+
+
+-- WHITESPACE, COMMENTS AND LINE ENDINGS
+
+
+{-| `ws = *wschar`, which is spaces and tabs and nothing else. A newline is not
+whitespace in TOML; it is what separates expressions.
+-}
+ws : P String
+ws =
+    P.getChompedString (P.chompWhile isWhitespace)
+
+
+isWhitespace : Char -> Bool
+isWhitespace char =
+    char == ' ' || char == '\t'
+
+
+{-| `comment = comment-start-symbol *non-eol`.
+
+The text is kept exactly, without the `#`, because `# note` and `#note` are
+different files. A character `non-eol` does not allow stops the comment, and the
+expression parser then fails looking for a newline -- which is the right answer
+for a control character in a comment, if not the clearest one.
+
+-}
+comment : P Comment
+comment =
+    P.succeed (\text -> { text = text })
+        |> P.skip (P.chompChar '#' ExpectingComment)
+        |> P.keep (P.getChompedString (P.chompWhile (orSurrogate Strings.isCommentChar)))
+
+
+{-| A chomping predicate that also accepts half a surrogate pair.
+
+`String.Parser.Advanced.isSubChar` in gren-lang/core 7.4.2 hands the predicate
+the leading surrogate rather than the code point when the next character is
+outside the Basic Multilingual Plane -- it decodes the pair into a `uniChar` and
+then tests `unit` anyway. So a predicate that asks what the character *is*
+rejects every astral character, and a comment containing an emoji ends at the
+emoji. See /tmp/gren-parser-surrogate-bug.md.
+
+Accepting a surrogate half is safe here because the source came through a strict
+UTF-8 decode, which cannot produce an unpaired one. The predicates that run over
+a real `Array Char` -- everything in `Toml.Strings` -- are unaffected and still
+reject surrogates, as they should.
+
+-}
+orSurrogate : (Char -> Bool) -> Char -> Bool
+orSurrogate isAllowed char =
+    let
+        code =
+            Char.toCode char
+    in
+    isAllowed char || (code >= 0xD800 && code <= 0xDFFF)
+
+
+{-| `newline = %x0A / %x0D.0A`. A carriage return on its own is not one.
+-}
+newline : P Newline
+newline =
+    P.oneOf
+        [ P.token "\u{000D}\u{000A}" ExpectingNewline |> P.map (\_ -> CrLf)
+        , P.chompChar '\n' ExpectingNewline |> P.map (\_ -> Lf)
+        ]
+
+
+
+-- KEYS
+
+
+{-| `key = simple-key / dotted-key`, which is one simple key and then any number
+of dotted ones. The whitespace around each dot is kept: `a . b` is a legal
+spelling of `a.b` and has to be written back the way it was found.
+-}
+key : P Key
+key =
+    P.succeed (\first rest -> { first = first, rest = rest })
+        |> P.keep simpleKey
+        |> P.keep (P.loop [] dottedStep)
+
+
+dottedStep :
+    Array { wsBefore : String, wsAfter : String, key : SimpleKey }
+    ->
+        P
+            (Step
+                (Array { wsBefore : String, wsAfter : String, key : SimpleKey })
+                (Array { wsBefore : String, wsAfter : String, key : SimpleKey })
+            )
+dottedStep found =
+    P.oneOf
+        [ -- Backtrackable because the whitespace before the dot has to be given
+          -- back when there is no dot: `a = 1` would otherwise lose the space
+          -- after the key, which belongs to the keyval separator instead.
+          P.backtrackable
+            (P.succeed
+                (\before after part ->
+                    Loop
+                        (Array.pushLast
+                            { wsBefore = before, wsAfter = after, key = part }
+                            found
+                        )
+                )
+                |> P.keep ws
+                |> P.skip (P.chompChar '.' ExpectingDot)
+                |> P.keep ws
+                |> P.keep simpleKey
+            )
+        , P.succeed (Done found)
+        ]
+
+
+{-| `simple-key = quoted-key / unquoted-key`.
+-}
+simpleKey : P SimpleKey
+simpleKey =
+    P.oneOf
+        [ quotedKey
+        , bareKey
+        ]
+
+
+bareKey : P SimpleKey
+bareKey =
+    P.getChompedString (P.chompWhile isBareKeyChar)
+        |> P.andThen
+            (\raw ->
+                if raw == "" then
+                    P.problem ExpectingKey
+
+                else
+                    P.succeed { raw = raw, value = raw }
+            )
+
+
+{-| `unquoted-key = 1*( ALPHA / DIGIT / %x2D / %x5F )`. ASCII only: the Unicode
+bare keys that were proposed for 1.1 were taken back out before it was released.
+-}
+isBareKeyChar : Char -> Bool
+isBareKeyChar char =
+    let
+        code =
+            Char.toCode char
+    in
+    (code >= 0x41 && code <= 0x5A)
+        || (code >= 0x61 && code <= 0x7A)
+        || (code >= 0x30 && code <= 0x39)
+        || (code == 0x2D)
+        || (code == 0x5F)
+
+
+{-| `quoted-key = basic-string / literal-string`. Single line only: a key cannot
+be a triple-quoted string, so the two multi-line forms are not offered here.
+-}
+quotedKey : P SimpleKey
+quotedKey =
+    P.oneOf
+        [ basicStringLiteral
+        , literalStringLiteral
+        ]
+        |> P.andThen
+            (\raw ->
+                when Strings.value raw is
+                    Just text ->
+                        P.succeed { raw = raw, value = text }
+
+                    Nothing ->
+                        P.problem (MalformedKey raw)
+            )
+
+
+
+-- TABLE HEADERS
+
+
+{-| `table = std-table / array-table`. The double bracket has to be tried first,
+since `[[` also starts with `[`.
+-}
+tableHeader : P TableHeader
+tableHeader =
+    P.oneOf
+        [ bracketed ArrayOfTables "[[" "]]"
+        , bracketed Std "[" "]"
+        ]
+
+
+bracketed : TableKind -> String -> String -> P TableHeader
+bracketed kind open close =
+    P.succeed
+        (\before name after ->
+            { kind = kind, wsBefore = before, key = name, wsAfter = after }
+        )
+        |> P.skip (P.token open ExpectingTableOpen)
+        |> P.keep ws
+        |> P.keep key
+        |> P.keep ws
+        |> P.skip (P.token close ExpectingTableClose)
+
+
+
+-- KEY-VALUE PAIRS
+
+
+{-| `keyval = key keyval-sep val`, where `keyval-sep = ws %x3D ws`.
+-}
+keyval : P KeyVal
+keyval =
+    P.succeed
+        (\name before after content ->
+            { key = name, wsBeforeEq = before, wsAfterEq = after, value = content }
+        )
+        |> P.keep key
+        |> P.keep ws
+        |> P.skip (P.chompChar '=' ExpectingEquals)
+        |> P.keep ws
+        |> P.keep value
+
+
+
+-- VALUES
+
+
+{-| `val = string / boolean / array / inline-table / date-time / float / integer`.
+
+The first four are told apart by their first character. The last three are not,
+so they share a branch that chomps the whole literal and asks the readers what
+it is.
+
+-}
+value : P Value
+value =
+    P.oneOf
+        [ stringValue
+        , booleanValue
+        , arrayValue
+        , inlineTableValue
+        , numberOrDateTime
+        ]
+
+
+stringValue : P Value
+stringValue =
+    P.oneOf
+        [ mlBasicStringLiteral
+        , basicStringLiteral
+        , mlLiteralStringLiteral
+        , literalStringLiteral
+        ]
+        |> P.andThen
+            (\raw ->
+                when Strings.value raw is
+                    Just text ->
+                        P.succeed (StringVal { raw = raw, value = text })
+
+                    Nothing ->
+                        P.problem (MalformedString raw)
+            )
+
+
+booleanValue : P Value
+booleanValue =
+    P.oneOf
+        [ P.keyword "true" ExpectingValue
+            |> P.map (\_ -> BooleanVal { raw = "true", value = True })
+        , P.keyword "false" ExpectingValue
+            |> P.map (\_ -> BooleanVal { raw = "false", value = False })
+        ]
+
+
+
+-- NUMBERS AND DATE-TIMES
+
+
+{-| The characters a number or a date-time can be spelled with, minus the space.
+
+A space is deliberately not here. It ends a value everywhere except between the
+date and the time of an `offset-date-time`, and that one place is handled by
+looking for it.
+
+-}
+isValueChar : Char -> Bool
+isValueChar char =
+    let
+        code =
+            Char.toCode char
+    in
+    (code >= 0x30 && code <= 0x39)
+        || (code >= 0x41 && code <= 0x5A)
+        || (code >= 0x61 && code <= 0x7A)
+        || (code == 0x2B)
+        || (code == 0x2D)
+        || (code == 0x2E)
+        || (code == 0x3A)
+        || (code == 0x5F)
+
+
+numberOrDateTime : P Value
+numberOrDateTime =
+    P.getChompedString (P.chompWhile isValueChar)
+        |> P.andThen
+            (\first ->
+                if first == "" then
+                    P.problem ExpectingValue
+
+                else
+                    dateTimeTail first
+            )
+        |> P.andThen classify
+
+
+{-| `time-delim = "T" / %x20`: a date and a time may be separated by a space, so
+a run that is exactly a date may have another run after it.
+
+Backtrackable, because a space that is not followed by a digit is the end of the
+value and belongs to whatever comes next -- the whitespace before a comment,
+usually.
+
+-}
+dateTimeTail : String -> P String
+dateTimeTail first =
+    if Date.fromString first == Nothing then
+        P.succeed first
+
+    else
+        P.oneOf
+            [ P.backtrackable
+                (P.succeed (\rest -> first ++ " " ++ rest)
+                    |> P.skip (P.chompChar ' ' ExpectingValue)
+                    |> P.keep
+                        (P.getChompedString
+                            (P.succeed {}
+                                |> P.skip (P.chompIf Char.isDigit ExpectingValue)
+                                |> P.skip (P.chompWhile isValueChar)
+                            )
+                        )
+                )
+            , P.succeed first
+            ]
+
+
+{-| Which of the five things the chomped text turned out to be.
+
+The order matters and is the grammar's: a date-time is tried before a bare date
+or time, and both before a number, so that `1979-05-27` is a date and `1979` is
+an integer. Integers and floats are disjoint -- a float must have a fraction or
+an exponent -- so their order between themselves does not.
+
+-}
+classify : String -> P Value
+classify raw =
+    when DateTime.fromString raw is
+        Just moment ->
+            P.succeed
+                (if DateTime.isLocal moment then
+                    LocalDateTimeVal { raw = raw, value = moment }
+
+                 else
+                    OffsetDateTimeVal { raw = raw, value = moment }
+                )
+
+        Nothing ->
+            when Date.fromString raw is
+                Just day ->
+                    P.succeed (LocalDateVal { raw = raw, value = day })
+
+                Nothing ->
+                    when CivilTime.fromString raw is
+                        Just clock ->
+                            P.succeed (LocalTimeVal { raw = raw, value = clock })
+
+                        Nothing ->
+                            classifyNumber raw
+
+
+classifyNumber : String -> P Value
+classifyNumber raw =
+    when Number.integer raw is
+        Just whole ->
+            P.succeed (IntegerVal { raw = raw, value = whole })
+
+        Nothing ->
+            when Number.float raw is
+                Just fractional ->
+                    P.succeed (FloatVal { raw = raw, value = fractional })
+
+                Nothing ->
+                    P.problem (MalformedValue raw)
+
+
+
+-- STRING LITERALS
+
+
+{-| The four chompers below find where a literal ends. What it means is
+`Toml.Strings`' business; all these do is take the right number of characters.
+-}
+basicStringLiteral : P String
+basicStringLiteral =
+    P.getChompedString
+        (P.succeed {}
+            |> P.skip (P.chompChar '"' ExpectingStringDelimiter)
+            |> P.skip (P.loop {} (\_ -> singleLineStep '"' True))
+        )
+
+
+literalStringLiteral : P String
+literalStringLiteral =
+    P.getChompedString
+        (P.succeed {}
+            |> P.skip (P.chompChar '\'' ExpectingStringDelimiter)
+            |> P.skip (P.loop {} (\_ -> singleLineStep '\'' False))
+        )
+
+
+mlBasicStringLiteral : P String
+mlBasicStringLiteral =
+    P.getChompedString
+        (P.succeed {}
+            |> P.skip (P.token "\"\"\"" ExpectingStringDelimiter)
+            |> P.skip (P.loop {} (\_ -> multiLineStep '"' True))
+        )
+
+
+mlLiteralStringLiteral : P String
+mlLiteralStringLiteral =
+    P.getChompedString
+        (P.succeed {}
+            |> P.skip (P.token "'''" ExpectingStringDelimiter)
+            |> P.skip (P.loop {} (\_ -> multiLineStep '\'' False))
+        )
+
+
+{-| One step through a single-line literal: the closing delimiter ends it, a
+backslash takes the next character with it, and a newline is not allowed at all.
+
+The escape is only skipped over here, not checked. Whether `\q` is an escape is
+a question about what the literal means, and `Toml.Strings` answers it with the
+whole literal in hand and a better message to give.
+
+-}
+singleLineStep : Char -> Bool -> P (Step {} {})
+singleLineStep delim escapes =
+    P.oneOf
+        [ P.chompChar delim ExpectingStringDelimiter
+            |> P.map (\_ -> Done {})
+        , if escapes then
+            P.succeed (Loop {})
+                |> P.skip (P.chompChar '\\' ExpectingStringCharacter)
+                |> P.skip (P.chompIf (\c -> c /= '\n') ExpectingStringCharacter)
+
+          else
+            P.problem ExpectingStringCharacter
+        , P.chompIf
+            (\c ->
+                c
+                    /= '\n'
+                    && c
+                    /= '\u{000D}'
+                    && not (escapes && c == '\\')
+            )
+            ExpectingStringCharacter
+            |> P.map (\_ -> Loop {})
+        ]
+
+
+{-| One step through a triple-quoted literal.
+
+The run of delimiters is the whole subtlety. `mlb-quotes` allows one or two of
+them inside the body, so a run of three or more is the end -- and the *whole* run
+is taken, not just three of it, because the closing delimiter is the last three.
+That is what makes `"""lol\""""""` a string containing `lol"""` rather than one
+containing `lol"`. A run too long to be content is left for `Toml.Strings` to
+refuse.
+
+-}
+multiLineStep : Char -> Bool -> P (Step {} {})
+multiLineStep delim escapes =
+    P.oneOf
+        [ P.getChompedString (P.chompWhile (\c -> c == delim))
+            |> P.andThen
+                (\run ->
+                    if run == "" then
+                        P.problem ExpectingStringDelimiter
+
+                    else if String.count run >= 3 then
+                        P.succeed (Done {})
+
+                    else
+                        P.succeed (Loop {})
+                )
+        , if escapes then
+            P.succeed (Loop {})
+                |> P.skip (P.chompChar '\\' ExpectingStringCharacter)
+                |> P.skip (P.chompIf (\_ -> True) ExpectingStringCharacter)
+
+          else
+            P.problem ExpectingStringCharacter
+        , P.chompIf
+            (\c -> c /= delim && not (escapes && c == '\\'))
+            ExpectingStringCharacter
+            |> P.map (\_ -> Loop {})
+        ]
+
+
+
+-- ARRAYS AND INLINE TABLES
+
+
+{-| `array = array-open [ array-values ] ws-comment-newline array-close`.
+-}
+arrayValue : P Value
+arrayValue =
+    P.succeed (\lit -> ArrayVal lit)
+        |> P.skip (P.chompChar '[' ExpectingArrayOpen)
+        |> P.keep (P.loop [] arrayStep)
+
+
+arrayStep : Array ArrayElement -> P (Step (Array ArrayElement) ArrayLit)
+arrayStep found =
+    trivia
+        |> P.andThen
+            (\before ->
+                P.oneOf
+                    [ P.chompChar ']' ExpectingArrayClose
+                        |> P.map (\_ -> Done { elements = found, trailing = before })
+                    , value
+                        |> P.andThen (\content -> arrayTail found before content)
+                    ]
+            )
+
+
+{-| After an element: a comma means there may be more, and a closing bracket
+means there are not. Nothing else will do, which is what rejects a missing
+separator -- the grammar allows a trailing comma but not an absent interior one.
+-}
+arrayTail : Array ArrayElement -> Trivia -> Value -> P (Step (Array ArrayElement) ArrayLit)
+arrayTail found before content =
+    trivia
+        |> P.andThen
+            (\after ->
+                let
+                    element hasComma =
+                        Array.pushLast
+                            { before = before, value = content, after = after, comma = hasComma }
+                            found
+                in
+                P.oneOf
+                    [ P.chompChar ',' ExpectingSeparator
+                        |> P.map (\_ -> Loop (element True))
+                    , P.chompChar ']' ExpectingArrayClose
+                        |> P.map (\_ -> Done { elements = element False, trailing = [] })
+                    ]
+            )
+
+
+{-| `inline-table`, which since TOML 1.1 has the same shape as an array:
+newlines, comments and a trailing comma are all allowed between the braces.
+-}
+inlineTableValue : P Value
+inlineTableValue =
+    P.succeed (\table -> InlineTableVal table)
+        |> P.skip (P.chompChar '{' ExpectingInlineTableOpen)
+        |> P.keep (P.loop [] inlineStep)
+
+
+inlineStep : Array InlineEntry -> P (Step (Array InlineEntry) InlineTable)
+inlineStep found =
+    trivia
+        |> P.andThen
+            (\before ->
+                P.oneOf
+                    [ P.chompChar '}' ExpectingInlineTableClose
+                        |> P.map (\_ -> Done { entries = found, trailing = before })
+                    , keyval
+                        |> P.andThen (\pair -> inlineTail found before pair)
+                    ]
+            )
+
+
+inlineTail : Array InlineEntry -> Trivia -> KeyVal -> P (Step (Array InlineEntry) InlineTable)
+inlineTail found before pair =
+    trivia
+        |> P.andThen
+            (\after ->
+                let
+                    entry hasComma =
+                        Array.pushLast
+                            { before = before, keyval = pair, after = after, comma = hasComma }
+                            found
+                in
+                P.oneOf
+                    [ P.chompChar ',' ExpectingSeparator
+                        |> P.map (\_ -> Loop (entry True))
+                    , P.chompChar '}' ExpectingInlineTableClose
+                        |> P.map (\_ -> Done { entries = entry False, trailing = [] })
+                    ]
+            )
+
+
+
+-- TRIVIA
+
+
+{-| `ws-comment-newline = *( wschar / [ comment ] newline )`.
+
+The two alternatives are not interchangeable: a comment has to be followed by a
+newline, so `[1 # note ]` is not an array and the same thing with the bracket on
+the next line is. Consuming the comment and then failing to find a newline is
+therefore the right behaviour, even though it makes for a blunt message.
+
+-}
+trivia : P Trivia
+trivia =
+    P.loop [] triviaStep
+
+
+triviaStep : Trivia -> P (Step Trivia Trivia)
+triviaStep found =
+    P.oneOf
+        [ P.getChompedString (P.chompWhile isWhitespace)
+            |> P.andThen
+                (\spaces ->
+                    if spaces == "" then
+                        P.problem ExpectingComment
+
+                    else
+                        P.succeed (Loop (Array.pushLast (Spaces spaces) found))
+                )
+        , P.succeed
+            (\note nl ->
+                Loop (Array.pushLast (Break { comment = note, newline = nl }) found)
+            )
+            |> P.keep (optional comment)
+            |> P.keep newline
+        , P.succeed (Done found)
+        ]
+
+
+
+-- SMALL HELPERS
+
+
+optional : P a -> P (Maybe a)
+optional parser =
+    P.oneOf
+        [ P.map Just parser
+        , P.succeed Nothing
+        ]
