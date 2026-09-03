@@ -149,10 +149,15 @@ reward for being valid.
 
 ```sh
 git clone --recurse-submodules <this repo>
+git clone <gren-civil-time>          # as a sibling directory
 
 devbox run test          # 71 checks over the corpus, ~0.8s, no network
 devbox run conformance   # the official toml-test runner; needs Go
 ```
+
+Until `gren-civil-time` is published, `gren.json` depends on it as
+`local:../gren-civil-time`, so the two have to sit side by side. That becomes a
+version range at publication, and this note goes away.
 
 The corpus is `vendor/toml-test`, a submodule pinned to a particular commit. The
 pin is load-bearing rather than tidiness: the suites assert exact counts -- 220
