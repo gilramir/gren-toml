@@ -148,8 +148,26 @@ reward for being valid.
 ## Tests
 
 ```sh
-devbox run test
+devbox run test          # 71 checks over the vendored corpus, ~0.8s, no network
+devbox run conformance   # the official toml-test runner; needs Go
 ```
+
+`toml-test/` is the official
+[toml-test](https://github.com/toml-lang/toml-test) decoder and encoder
+interface, in this repo so that the library and the thing that scores it move
+together. It depends on this package the way anyone else would, so it also
+proves the public API is enough to build a real consumer:
+
+```
+  valid tests: 214 passed,  0 failed
+encoder tests: 214 passed,  0 failed
+invalid tests: 467 passed,  0 failed
+```
+
+The two runs check different things on purpose. `toml-test` embeds its own
+corpus and compares with the official Go implementation; `tests/` uses the newer
+vendored checkout, a comparator written independently in Gren, and additionally
+the byte-for-byte round trip, which `toml-test` has no notion of.
 
 ## License
 

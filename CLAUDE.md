@@ -31,7 +31,14 @@ Everything runs inside devbox; `gren` and node 22 are not on `PATH` otherwise.
 devbox run build    # compile the package
 devbox run docs     # check the doc comments parse
 devbox run test     # tests/run.sh: 71 checks, 714 of them corpus files, ~0.8s
+
+devbox run conformance   # toml-test/: the official runner. Needs Go and,
+                         # on first use, a network.
 ```
+
+`toml-test/` has its own devbox.json because it needs Go, and the package's own
+toolchain should not: a contributor who only wants to build the library should
+not be made to fetch a Go distribution.
 
 Format sources after editing them, especially after scripted edits:
 
@@ -113,6 +120,13 @@ package root; both reproduce their file byte for byte and already emit the
 escapes `gren-format` normalises to, so a diff afterwards means the script and
 the file have drifted. Each writes its row counts into a guard test, so an
 extractor that quietly found nothing cannot produce a passing suite.
+
+`toml-test/` is an application, not part of the package, and it depends on
+`gilramir/gren-toml` as `local:../` rather than putting `../src` on its source
+path. **Keep it that way.** It is the only thing in the repo that goes through
+the published API, so it is what notices when something a consumer needs is not
+exposed — importing `Toml.Write` from there is a compile error, and should stay
+one.
 
 `RoundTrip`, `Semantics` and `Values` read the corpus off the disk through
 `tests/src/Corpus.gren`, so they follow the vendored `toml-test` rather than a

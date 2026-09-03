@@ -1,8 +1,19 @@
 # gren-toml-test
 
 The [toml-test](https://github.com/toml-lang/toml-test) decoder *and* encoder
-interfaces for [`gren-toml`](../gren-toml). Not a library, not published: a way
-to score the library against the official suite using the official runner.
+interfaces for [`gren-toml`](..). Not a library, not published: a way to score
+the library against the official suite using the official runner.
+
+It lives in the same repository as the library on purpose. A library and the
+evidence that it works should not be able to drift apart across two checkouts,
+and anyone who clones `gren-toml` should be able to run the official suite
+against it without going looking for anything.
+
+It is also the only thing here that depends on `gren-toml` the way an outside
+consumer does -- `local:../`, not `../src` on the source path the way `tests/`
+deliberately does. So it doubles as a check that the public API is enough to
+build something real out of: importing an unexposed module from here is a
+compile error, and should stay one.
 
 ```
 % devbox run test
@@ -59,13 +70,13 @@ that reads `1979-05-27T07:32:00Z` out of a TOML file reads it out of here.
 
 ## Why two conformance runs
 
-This one and `gren-toml`'s own `tests/` suite check the same library against
+This one and the library's own `../tests` suite check the same library against
 different things, on purpose:
 
 |  | corpus | comparator |
 | --- | --- | --- |
 | here | embedded in the released v2.2.0 runner | the official Go one |
-| `gren-toml/tests` | `../vendor/toml-test`, a newer checkout | written independently in Gren |
+| `../tests` | `../../vendor/toml-test`, a newer checkout | written independently in Gren |
 
 So a bug would have to fool two comparators about two snapshots to get through.
 The vendored corpus is the larger of the two — 220 valid and 494 invalid files
@@ -78,6 +89,13 @@ byte-for-byte round trip, which `toml-test` has no notion of.
 devbox run build   # produces ./gren-toml-decode and ./gren-toml-encode
 devbox run test    # builds, then runs the official suite over both
 ```
+
+Or `devbox run conformance` from the package root, which is this directory's
+`test` under another name.
+
+This directory has a devbox.json of its own because it needs Go, and the
+package's toolchain should not: someone who only wants to build the library
+should not be made to fetch a Go distribution to do it.
 
 `conformance.sh` installs the runner into `.bin/` on first use, which needs Go
 and a network. `build.sh` needs neither.
