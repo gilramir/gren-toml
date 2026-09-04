@@ -19,6 +19,303 @@ test suite. It is exact by construction rather than by effort: the AST stores
 the whitespace and the comments as *text*, so there is nowhere for a character
 to go missing.
 
+## Two programs, start to finish
+
+Both compile as written against `gren-lang/node`, and both were run before they
+were pasted here. The first only reads a file. The second owns one: it creates
+the file on the first run, reads it on every run after, and writes it back
+without disturbing anything the user did to it.
+
+### Reading a config file into your own type
+
+The file:
+
+```toml
+# Where the service listens.
+[server]
+host = "0.0.0.0"
+port = 8080
+
+[logging]
+level = "info"   # one of: debug, info, warn
+# Optional. Logs go to stdout when this is missing.
+file = "/var/log/svc.log"
+```
+
+The type you want it to become, and a decoder that says how the file maps onto
+it:
+
+```gren
+import Toml.Decode as Decode exposing (Decoder)
+
+type alias Config =
+    { host : String
+    , listenPort : Int
+    , level : String
+    , logFile : Maybe String
+    }
+
+config : Decoder Config
+config =
+    Decode.succeed
+        (\host listenPort level logFile ->
+            { host = host, listenPort = listenPort, level = level, logFile = logFile }
+        )
+        |> Decode.andMap (Decode.at [ "server", "host" ] Decode.string)
+        |> Decode.andMap (Decode.at [ "server", "port" ] Decode.int)
+        |> Decode.andMap (Decode.at [ "logging", "level" ] Decode.string)
+        |> Decode.andMap (Decode.field "logging" (Decode.optionalField "file" Decode.string))
+```
+
+Line by line:
+
+- **`Decode.succeed` starts with a function** that builds the record, and each
+  `andMap` feeds it one decoded value, in the order the arguments are written.
+  To add a field to the config, add an argument and a line. `map2` and `map3`
+  exist for the short cases.
+- **`Decode.at [ "server", "host" ]` is a path through the table tree.** It finds
+  the value whether the file wrote a `[server]` header with `host` under it, or
+  `server.host = "0.0.0.0"` on one line. Your decoder does not know or care how
+  the file was laid out.
+- **`Decode.int` is where the type is checked.** A value that is not an integer
+  fails right here, and the error names the path. Nothing downstream needs to
+  check again.
+- **`optionalField` is `Nothing` when the key is absent** and still an error when
+  the key is present with the wrong type. That is the difference from `maybe`,
+  which forgives both.
+
+Reading the file is one function:
+
+```gren
+import FileSystem
+import FileSystem.Path exposing (Path)
+import Task exposing (Task)
+
+loadConfig : FileSystem.Permission -> Path -> Task String Config
+loadConfig fs path =
+    FileSystem.readFile fs path
+        |> Task.mapError FileSystem.errorToString
+        |> Task.andThen
+            (\bytes ->
+                when Decode.fromBytes config bytes is
+                    Ok found ->
+                        Task.succeed found
+
+                    Err problem ->
+                        Task.fail (Decode.errorToString problem)
+            )
+```
+
+- **`FileSystem.readFile` hands you `Bytes`. Hand the bytes on.** `Decode.fromBytes`
+  parses, checks what the document means (duplicate keys, a table defined
+  twice) and decodes, in one call. It takes bytes rather than a string because
+  a UTF-8 error can only be seen before the text has been repaired -- see
+  [start from the bytes](#start-from-the-bytes).
+- **Every failure becomes one line of text** through `errorToString`, with the
+  path to the problem. Change `level = "info"` to `level = 3` and the program
+  reports:
+
+  ```
+  at logging.level: expected a string, found an integer
+  ```
+
+- **That is the program's entire contact with TOML.** From here on it holds a
+  `Config`, and nothing else in it knows there was a file.
+
+### A settings file the program creates, reads and updates
+
+This is the shape a TUI or a desktop tool has: a settings file the program
+writes on the first run, the user edits by hand, and the program writes again
+on every save. The whole point of this package is that the user's edits, their
+comments and their arrangement survive that last step.
+
+```gren
+import Array exposing (Array)
+import Toml
+import Toml.Decode as Decode exposing (Decoder)
+import Toml.Edit as Edit
+
+type alias Settings =
+    { theme : String
+    , zones : Array String
+    }
+
+defaults : Settings
+defaults =
+    { theme = "dark", zones = [ "UTC" ] }
+```
+
+**Loading.** Three outcomes, and the difference between the second and the
+third is the one that matters:
+
+```gren
+load : FileSystem.Permission -> Path -> Task String Toml.Document
+load fs path =
+    FileSystem.readFile fs path
+        |> Task.map Just
+        |> Task.onError
+            (\problem ->
+                if FileSystem.errorIsNoSuchFileOrDirectory problem then
+                    Task.succeed Nothing
+
+                else
+                    Task.fail (FileSystem.errorToString problem)
+            )
+        |> Task.andThen
+            (\found ->
+                when found is
+                    Nothing ->
+                        Task.succeed Toml.empty
+
+                    Just bytes ->
+                        when Toml.parseBytes bytes is
+                            Ok document ->
+                                Task.succeed document
+
+                            Err problem ->
+                                Task.fail (Toml.errorToString problem)
+            )
+```
+
+- **No file yet means `Toml.empty`.** That is the first run, and it is not a
+  special case anywhere else in the program: every key is missing from an empty
+  document, and the save below adds keys that are missing.
+- **A file that will not parse is an error, and stays one.** Do not write
+  `Result.withDefault Toml.empty` here. It reads well and it means that a user
+  who leaves a typo in the file gets an empty document written over their whole
+  file on the next save. With the code above, `theme = dark` (no quotes) stops
+  the program with:
+
+  ```
+  line 2, column 13: expected a value, but dark is not one
+  ```
+
+  and the file on disk is exactly as they left it.
+
+- **Any other I/O error is also an error.** Permission denied is not "no file".
+
+**Reading the values out of the document you are holding:**
+
+```gren
+settings : Decoder Settings
+settings =
+    Decode.map2 (\theme zones -> { theme = theme, zones = zones })
+        (Decode.optionalField "theme" Decode.string
+            |> Decode.map (Maybe.withDefault defaults.theme)
+        )
+        (Decode.optionalField "zones" (Decode.array Decode.string)
+            |> Decode.map (Maybe.withDefault defaults.zones)
+        )
+
+read : Toml.Document -> Result String Settings
+read document =
+    Decode.fromDocument settings document
+        |> Result.mapError Decode.errorToString
+```
+
+- **Every key is optional and has a default**, so a missing key -- on the first
+  run, or because the user deleted a line -- is not an error. A key that is
+  there with the wrong type still is, which is what you want: `theme = 3` is a
+  mistake to report, not a default to fall back to.
+- **`fromDocument` decodes the document you already parsed.** The program keeps
+  the `Document` for editing, so there is no reason to parse the file twice.
+
+**Writing the values back into that same document:**
+
+```gren
+write : Settings -> Toml.Document -> Toml.Document
+write current document =
+    document
+        |> Edit.introduce [ "theme" ]
+            { blankBefore = True
+            , leading = [ " Colour scheme: \"dark\" or \"light\"." ]
+            , trailing = Nothing
+            }
+            (Edit.string current.theme)
+        |> Edit.introduce [ "zones" ]
+            { blankBefore = True
+            , leading = [ " Time zones, in the order they are shown." ]
+            , trailing = Nothing
+            }
+            (Edit.array (Array.map Edit.string current.zones))
+```
+
+- **`introduce` is `set` plus an explanation, written only the first time.** When
+  the key is not in the document, the value goes in with the comment block
+  above it. When the key is already there, only the value is set and the
+  comments -- whatever the user has made of them since -- are left alone.
+- **`set` compares before it writes.** A key whose value has not changed is not
+  touched at all, spacing and comments included, so writing every key on every
+  save is safe. That is what lets `write` be one function that does not need
+  to know what changed.
+- **Values are built with `Edit.string`, `Edit.int`, `Edit.array` and the
+  rest.** Each one chooses a spelling for a value that has no source text yet.
+- **Keys under a `[header]` are the same call** with a longer path:
+  `Edit.introduce [ "window", "width" ] ...` brings the `[window]` header with
+  it when there is none. To explain the section itself, `Edit.setTableComments
+  [ "window" ]`, guarded by `Edit.member` on its first key so it happens once.
+
+**Saving:**
+
+```gren
+save : FileSystem.Permission -> Path -> Toml.Document -> Task String {}
+save fs path document =
+    FileSystem.writeFile fs (Toml.toBytes document) path
+        |> Task.mapError FileSystem.errorToString
+        |> Task.map (\_ -> {})
+```
+
+- **`Toml.toBytes` is the way back from `parseBytes`**, byte order mark included
+  if there was one. `writeFile` creates the file or overwrites it.
+
+**Putting it together.** Keep the `Document` in your model next to the
+`Settings`, because the document is the user's file and the settings are just
+what you read out of it. On start, `load`, then `read`. On every save,
+`write settings document |> save fs path`. There is no separate "first run"
+code: the first run is a save onto `Toml.empty`.
+
+Here is what that looks like on disk. The first run, with no file, writes:
+
+```toml
+# Colour scheme: "dark" or "light".
+theme = "dark"
+
+# Time zones, in the order they are shown.
+zones = ["UTC"]
+```
+
+The user opens it, changes the theme, adds a note, and arranges the zones the
+way they like:
+
+```toml
+# Colour scheme: "dark" or "light".
+theme = "light"   # easier on the eyes at work
+
+# Time zones, in the order they are shown.
+zones = [
+  "Asia/Seoul",      # them
+  "America/Chicago", # me
+]
+```
+
+`read` now gives `{ theme = "light", zones = [ "Asia/Seoul", "America/Chicago" ] }`.
+The program switches the theme back to `"dark"` and saves everything:
+
+```toml
+# Colour scheme: "dark" or "light".
+theme = "dark"   # easier on the eyes at work
+
+# Time zones, in the order they are shown.
+zones = [
+  "Asia/Seoul",      # them
+  "America/Chicago", # me
+]
+```
+
+One value changed. The note beside it stayed, the array the user arranged by
+hand was not rewritten because it already said what the program was setting it
+to, and the explanations were not written a second time.
+
 ## Editing
 
 ```gren
