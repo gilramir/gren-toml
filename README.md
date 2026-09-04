@@ -141,9 +141,9 @@ reward for being valid.
 - [`gilramir/gren-bignum`](https://packages.gren-lang.org/) for integers with no
   width and decimals with no rounding, so `9223372036854775807` and `0.1` are
   both exact.
-- [`gilramir/gren-civil-time`](../gren-civil-time) for the four date and time
-  shapes, kept lexical so that `-07:00` survives instead of being normalised
-  away.
+- [`gilramir/gren-civil-time`](https://packages.gren-lang.org/package/gilramir/gren-civil-time)
+  for the four date and time shapes, kept lexical so that `-07:00` survives
+  instead of being normalised away.
 
 ## Tests
 
@@ -152,7 +152,7 @@ devbox run test          # 71 checks, ~0.8s, no network
 devbox run conformance   # the official toml-test runner; needs Go
 ```
 
-### First, the two things that have to be beside the repo
+### First, the one thing that has to be beside the repo
 
 **The test corpus is a git submodule.** `vendor/toml-test` holds the 714 files
 the suite reads, and it is pinned to one commit — which is load-bearing rather
@@ -183,19 +183,6 @@ three suites just have nothing to read. Fix it in place, no re-clone needed:
 ```sh
 git submodule update --init
 ```
-
-**`gren-civil-time` has to be a sibling directory.** Until it is published,
-`gren.json` depends on it as `local:../gren-civil-time`, so `~/prj/gren-toml`
-and `~/prj/gren-civil-time` sit next to each other. Without it nothing compiles
-at all, and the error names the path it wanted:
-
-```
-The error is:
-
-    ENOENT: no such file or directory, lstat '/home/you/prj/gren-civil-time'
-```
-
-This becomes a version range at publication.
 
 ### What the two commands check
 

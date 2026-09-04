@@ -23,16 +23,10 @@ Modules, outermost first:
 - `Toml.Write` — the AST back to text. Not exposed.
 - `Toml.Number`, `Toml.Strings` — reading a literal into its value. Not exposed.
 
-## This repo is not self-contained yet
+## The one thing that has to be beside this repo
 
-Two things have to be beside it:
-
-- **`vendor/toml-test`** is a submodule. `git submodule update --init` if it is
-  empty, or the three corpus suites have nothing to read.
-- **`gren-civil-time`** is depended on as `local:../gren-civil-time`, so it has
-  to be checked out as a sibling directory. That becomes a version range once it
-  is published, and the same goes for `toml-test/gren.json`, which reaches it as
-  `local:../../gren-civil-time`.
+**`vendor/toml-test`** is a submodule. `git submodule update --init` if it is
+empty, or the three corpus suites have nothing to read.
 
 ## Commands
 
