@@ -1,11 +1,23 @@
 module Toml.Ast exposing
-    ( Document, Expression, Content(..)
-    , Comment, Newline(..)
-    , KeyVal, Key, SimpleKey
-    , TableHeader, TableKind(..)
-    , Value(..), FloatValue(..), Sign(..)
-    , ArrayLit, ArrayElement, InlineTable, InlineEntry
-    , Trivia, TriviaPiece(..)
+    ( ArrayElement
+    , ArrayLit
+    , Comment
+    , Content(..)
+    , Document
+    , Expression
+    , FloatValue(..)
+    , InlineEntry
+    , InlineTable
+    , Key
+    , KeyVal
+    , Newline(..)
+    , Sign(..)
+    , SimpleKey
+    , TableHeader
+    , TableKind(..)
+    , Trivia
+    , TriviaPiece(..)
+    , Value(..)
     )
 
 {-| The syntax of a TOML document, with every character of it kept.
@@ -186,7 +198,6 @@ import Civil.Time exposing (Time)
 import Maybe exposing (Maybe)
 
 
-
 -- THE DOCUMENT
 
 
@@ -245,7 +256,6 @@ type Newline
     | CrLf
 
 
-
 -- KEYS AND VALUES
 
 
@@ -286,7 +296,6 @@ type alias SimpleKey =
     }
 
 
-
 -- TABLE HEADERS
 
 
@@ -306,7 +315,6 @@ type alias TableHeader =
 type TableKind
     = Std
     | ArrayOfTables
-
 
 
 -- VALUES
@@ -353,7 +361,6 @@ type FloatValue
 type Sign
     = Positive
     | Negative
-
 
 
 -- ARRAYS AND INLINE TABLES
@@ -408,7 +415,6 @@ type alias InlineEntry =
     , after : Trivia
     , comma : Bool
     }
-
 
 
 -- TRIVIA

@@ -1,12 +1,38 @@
 module Toml.Decode exposing
-    ( Decoder, Error(..)
-    , fromBytes, fromString, fromDocument, fromTable
+    ( Decoder
+    , Error(..)
+    , andMap
+    , andThen
+    , array
+    , at
+    , bigDecimal
+    , bigInt
+    , bool
+    , dict
     , errorToString
-    , string, bool, int, float, bigInt, bigDecimal
-    , offsetDateTime, localDateTime, localDate, localTime
-    , array, dict, table, value
-    , field, at, optionalField
-    , succeed, fail, map, map2, map3, andMap, andThen, oneOf, maybe, lazy
+    , fail
+    , field
+    , float
+    , fromBytes
+    , fromDocument
+    , fromString
+    , fromTable
+    , int
+    , lazy
+    , localDate
+    , localDateTime
+    , localTime
+    , map
+    , map2
+    , map3
+    , maybe
+    , offsetDateTime
+    , oneOf
+    , optionalField
+    , string
+    , succeed
+    , table
+    , value
     )
 
 {-| Reading a TOML file into your own types.
@@ -274,7 +300,6 @@ unwind error path =
             { path = path, message = message }
 
 
-
 -- RUNNING
 
 
@@ -329,7 +354,6 @@ run (Decoder decode) content =
     decode content
 
 
-
 -- PRIMITIVES
 
 
@@ -337,28 +361,26 @@ run (Decoder decode) content =
 -}
 string : Decoder String
 string =
-    scalar "a string" <|
-        \content ->
-            when content is
-                Table.StringValue text ->
-                    Just text
+    scalar "a string" <| \content ->
+        when content is
+            Table.StringValue text ->
+                Just text
 
-                _ ->
-                    Nothing
+            _ ->
+                Nothing
 
 
 {-| A TOML boolean.
 -}
 bool : Decoder Bool
 bool =
-    scalar "a boolean" <|
-        \content ->
-            when content is
-                Table.BooleanValue flag ->
-                    Just flag
+    scalar "a boolean" <| \content ->
+        when content is
+            Table.BooleanValue flag ->
+                Just flag
 
-                _ ->
-                    Nothing
+            _ ->
+                Nothing
 
 
 {-| A TOML integer, as a Gren `Int`.
@@ -370,38 +392,36 @@ whole reason [`bigInt`](#bigInt) exists.
 -}
 int : Decoder Int
 int =
-    Decoder <|
-        \content ->
-            when content is
-                Table.IntegerValue whole ->
-                    when BigInt.toInt whole is
-                        Just small ->
-                            Ok small
+    Decoder <| \content ->
+        when content is
+            Table.IntegerValue whole ->
+                when BigInt.toInt whole is
+                    Just small ->
+                        Ok small
 
-                        Nothing ->
-                            Err
-                                (Custom
-                                    (BigInt.toString whole
-                                        ++ " does not fit in an Int; use bigInt to read it exactly"
-                                    )
+                    Nothing ->
+                        Err
+                            (Custom
+                                (BigInt.toString whole
+                                    ++ " does not fit in an Int; use bigInt to read it exactly"
                                 )
+                            )
 
-                _ ->
-                    Err (Expected { wanted = "an integer", found = describe content })
+            _ ->
+                Err (Expected { wanted = "an integer", found = describe content })
 
 
 {-| A TOML integer at its full width, whatever that is.
 -}
 bigInt : Decoder BigInt
 bigInt =
-    scalar "an integer" <|
-        \content ->
-            when content is
-                Table.IntegerValue whole ->
-                    Just whole
+    scalar "an integer" <| \content ->
+        when content is
+            Table.IntegerValue whole ->
+                Just whole
 
-                _ ->
-                    Nothing
+            _ ->
+                Nothing
 
 
 {-| A TOML float, as a Gren `Float`.
@@ -414,23 +434,22 @@ lost -- `0.1` in the file is exactly `0.1` until this point. Ask for
 -}
 float : Decoder Float
 float =
-    scalar "a float" <|
-        \content ->
-            when content is
-                Table.FloatValue (Ast.Finite number) ->
-                    Just (BigDecimal.toFloat number)
+    scalar "a float" <| \content ->
+        when content is
+            Table.FloatValue (Ast.Finite number) ->
+                Just (BigDecimal.toFloat number)
 
-                Table.FloatValue (Ast.Infinite Ast.Positive) ->
-                    Just (1 / 0)
+            Table.FloatValue (Ast.Infinite Ast.Positive) ->
+                Just (1 / 0)
 
-                Table.FloatValue (Ast.Infinite Ast.Negative) ->
-                    Just (-1 / 0)
+            Table.FloatValue (Ast.Infinite Ast.Negative) ->
+                Just (-1 / 0)
 
-                Table.FloatValue (Ast.NotANumber _) ->
-                    Just (0 / 0)
+            Table.FloatValue (Ast.NotANumber _) ->
+                Just (0 / 0)
 
-                _ ->
-                    Nothing
+            _ ->
+                Nothing
 
 
 {-| A finite TOML float as an exact decimal.
@@ -441,15 +460,13 @@ that takes them.
 -}
 bigDecimal : Decoder BigDecimal
 bigDecimal =
-    scalar "a finite float" <|
-        \content ->
-            when content is
-                Table.FloatValue (Ast.Finite number) ->
-                    Just number
+    scalar "a finite float" <| \content ->
+        when content is
+            Table.FloatValue (Ast.Finite number) ->
+                Just number
 
-                _ ->
-                    Nothing
-
+            _ ->
+                Nothing
 
 
 -- DATES AND TIMES
@@ -459,57 +476,52 @@ bigDecimal =
 -}
 offsetDateTime : Decoder DateTime
 offsetDateTime =
-    scalar "an offset date-time" <|
-        \content ->
-            when content is
-                Table.OffsetDateTimeValue moment ->
-                    Just moment
+    scalar "an offset date-time" <| \content ->
+        when content is
+            Table.OffsetDateTimeValue moment ->
+                Just moment
 
-                _ ->
-                    Nothing
+            _ ->
+                Nothing
 
 
 {-| `1979-05-27T07:32:00`: a date and time that does not.
 -}
 localDateTime : Decoder DateTime
 localDateTime =
-    scalar "a local date-time" <|
-        \content ->
-            when content is
-                Table.LocalDateTimeValue moment ->
-                    Just moment
+    scalar "a local date-time" <| \content ->
+        when content is
+            Table.LocalDateTimeValue moment ->
+                Just moment
 
-                _ ->
-                    Nothing
+            _ ->
+                Nothing
 
 
 {-| `1979-05-27`.
 -}
 localDate : Decoder Date
 localDate =
-    scalar "a local date" <|
-        \content ->
-            when content is
-                Table.LocalDateValue day ->
-                    Just day
+    scalar "a local date" <| \content ->
+        when content is
+            Table.LocalDateValue day ->
+                Just day
 
-                _ ->
-                    Nothing
+            _ ->
+                Nothing
 
 
 {-| `07:32:00`.
 -}
 localTime : Decoder Time
 localTime =
-    scalar "a local time" <|
-        \content ->
-            when content is
-                Table.LocalTimeValue clock ->
-                    Just clock
+    scalar "a local time" <| \content ->
+        when content is
+            Table.LocalTimeValue clock ->
+                Just clock
 
-                _ ->
-                    Nothing
-
+            _ ->
+                Nothing
 
 
 -- STRUCTURES
@@ -524,17 +536,16 @@ only about what may be done to them in the file.
 -}
 array : Decoder a -> Decoder (Array a)
 array element =
-    Decoder <|
-        \content ->
-            when content is
-                Table.ArrayValue items ->
-                    each element items
+    Decoder <| \content ->
+        when content is
+            Table.ArrayValue items ->
+                each element items
 
-                Table.TableArrayValue items ->
-                    each element (Array.map Table.TableValue items)
+            Table.TableArrayValue items ->
+                each element (Array.map Table.TableValue items)
 
-                _ ->
-                    Err (Expected { wanted = "an array", found = describe content })
+            _ ->
+                Err (Expected { wanted = "an array", found = describe content })
 
 
 each : Decoder a -> Array Table.Value -> Result Error (Array a)
@@ -554,35 +565,33 @@ data rather than structure.
 -}
 dict : Decoder a -> Decoder (Dict String a)
 dict each_ =
-    Decoder <|
-        \content ->
-            when content is
-                Table.TableValue found ->
-                    Dict.foldl
-                        (\name item soFar ->
-                            Result.map2 (Dict.set name)
-                                (run each_ item |> Result.mapError (\reason -> Field { name = name, inner = reason }))
-                                soFar
-                        )
-                        (Ok Dict.empty)
-                        (Table.entries found)
+    Decoder <| \content ->
+        when content is
+            Table.TableValue found ->
+                Dict.foldl
+                    (\name item soFar ->
+                        Result.map2 (Dict.set name)
+                            (run each_ item |> Result.mapError (\reason -> Field { name = name, inner = reason }))
+                            soFar
+                    )
+                    (Ok Dict.empty)
+                    (Table.entries found)
 
-                _ ->
-                    Err (Expected { wanted = "a table", found = describe content })
+            _ ->
+                Err (Expected { wanted = "a table", found = describe content })
 
 
 {-| The table itself, undecoded, for walking by hand.
 -}
 table : Decoder Table
 table =
-    Decoder <|
-        \content ->
-            when content is
-                Table.TableValue found ->
-                    Ok found
+    Decoder <| \content ->
+        when content is
+            Table.TableValue found ->
+                Ok found
 
-                _ ->
-                    Err (Expected { wanted = "a table", found = describe content })
+            _ ->
+                Err (Expected { wanted = "a table", found = describe content })
 
 
 {-| The value itself, undecoded.
@@ -592,7 +601,6 @@ value =
     Decoder Ok
 
 
-
 -- FIELDS
 
 
@@ -600,19 +608,18 @@ value =
 -}
 field : String -> Decoder a -> Decoder a
 field name inner =
-    Decoder <|
-        \content ->
-            when content is
-                Table.TableValue found ->
-                    when Table.get name found is
-                        Just item ->
-                            run inner item |> Result.mapError (\reason -> Field { name = name, inner = reason })
+    Decoder <| \content ->
+        when content is
+            Table.TableValue found ->
+                when Table.get name found is
+                    Just item ->
+                        run inner item |> Result.mapError (\reason -> Field { name = name, inner = reason })
 
-                        Nothing ->
-                            Err (Field { name = name, inner = Custom "no such key" })
+                    Nothing ->
+                        Err (Field { name = name, inner = Custom "no such key" })
 
-                _ ->
-                    Err (Expected { wanted = "a table", found = describe content })
+            _ ->
+                Err (Expected { wanted = "a table", found = describe content })
 
 
 {-| The value under a path of keys, which is what a `[a.b.c]` header wrote.
@@ -633,22 +640,20 @@ A key that *is* there but holds the wrong kind of value is still an error. Use
 -}
 optionalField : String -> Decoder a -> Decoder (Maybe a)
 optionalField name inner =
-    Decoder <|
-        \content ->
-            when content is
-                Table.TableValue found ->
-                    when Table.get name found is
-                        Just item ->
-                            run inner item
-                                |> Result.map Just
-                                |> Result.mapError (\reason -> Field { name = name, inner = reason })
+    Decoder <| \content ->
+        when content is
+            Table.TableValue found ->
+                when Table.get name found is
+                    Just item ->
+                        run inner item
+                            |> Result.map Just
+                            |> Result.mapError (\reason -> Field { name = name, inner = reason })
 
-                        Nothing ->
-                            Ok Nothing
+                    Nothing ->
+                        Ok Nothing
 
-                _ ->
-                    Err (Expected { wanted = "a table", found = describe content })
-
+            _ ->
+                Err (Expected { wanted = "a table", found = describe content })
 
 
 -- COMBINING
@@ -762,7 +767,6 @@ maybe inner =
 lazy : ({} -> Decoder a) -> Decoder a
 lazy build =
     Decoder (\content -> run (build {}) content)
-
 
 
 -- HELPERS

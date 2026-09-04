@@ -610,7 +610,7 @@ editingSuite =
             , U.test "and it carries a byte order mark back, which a String cannot say" <| \_ ->
                 let
                     original =
-                        Bytes.fromString ("﻿" ++ source)
+                        Bytes.fromString ("\u{FEFF}" ++ source)
                 in
                 Task.succeed
                     (Expect.equal (Ok (Bytes.length original))
@@ -621,8 +621,8 @@ editingSuite =
                     )
             , U.test "unless the String still has the mark, which parse then keeps too" <| \_ ->
                 Task.succeed
-                    (Expect.equal (Ok ("﻿" ++ source))
-                        (Toml.parse ("﻿" ++ source)
+                    (Expect.equal (Ok ("\u{FEFF}" ++ source))
+                        (Toml.parse ("\u{FEFF}" ++ source)
                             |> Result.mapError Toml.errorToString
                             |> Result.map Toml.toString
                         )

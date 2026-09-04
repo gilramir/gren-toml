@@ -1,8 +1,14 @@
 module Toml.Strings exposing
     ( Kind(..)
-    , kindOf, delimiter, value
-    , escape, isBareKey
-    , isBasicUnescaped, isLiteralChar, isNonAscii, isCommentChar
+    , delimiter
+    , escape
+    , isBareKey
+    , isBasicUnescaped
+    , isCommentChar
+    , isLiteralChar
+    , isNonAscii
+    , kindOf
+    , value
     )
 
 {-| Reading TOML's four kinds of string literal into the strings they mean.
@@ -204,15 +210,14 @@ One newline, and only one.
 -}
 trimNewline : String -> String
 trimNewline body =
-    if String.startsWith "\u{000D}\u{000A}" body then
+    if String.startsWith "\r\n" body then
         String.dropFirst 2 body
 
-    else if String.startsWith "\u{000A}" body then
+    else if String.startsWith "\n" body then
         String.dropFirst 1 body
 
     else
         body
-
 
 
 -- THE TWO READERS
@@ -359,13 +364,13 @@ simpleEscape char =
             Just "\u{000C}"
 
         0x6E ->
-            Just "\u{000A}"
+            Just "\n"
 
         0x72 ->
-            Just "\u{000D}"
+            Just "\r"
 
         0x74 ->
-            Just "\u{0009}"
+            Just "\t"
 
         _ ->
             Nothing
@@ -410,7 +415,7 @@ codePoint chars index width =
 
 isScalarValue : Int -> Bool
 isScalarValue code =
-    code <= 0x0010FFFF && (code < 0xD800 || code > 0xDFFF)
+    code <= 0x10FFFF && (code < 0xD800 || code > 0xDFFF)
 
 
 hexValue : Char -> Int
@@ -478,7 +483,6 @@ lineEndingEscape chars index =
         Nothing
 
 
-
 -- CHARACTER CLASSES
 
 
@@ -496,7 +500,7 @@ isBasicUnescaped char =
             Char.toCode char
     in
     (code == 0x20)
-        || (code == 0x09)
+        || (code == 0x9)
         || (code == 0x21)
         || (code >= 0x23 && code <= 0x5B)
         || (code >= 0x5D && code <= 0x7E)
@@ -515,7 +519,7 @@ isLiteralChar char =
         code =
             Char.toCode char
     in
-    (code == 0x09)
+    (code == 0x9)
         || (code >= 0x20 && code <= 0x26)
         || (code >= 0x28 && code <= 0x7E)
         || isNonAscii char
@@ -533,7 +537,7 @@ isNonAscii char =
         code =
             Char.toCode char
     in
-    (code >= 0x80 && code <= 0xD7FF) || (code >= 0xE000 && code <= 0x0010FFFF)
+    (code >= 0x80 && code <= 0xD7FF) || (code >= 0xE000 && code <= 0x10FFFF)
 
 
 {-| `non-eol`: what may appear in a comment.
@@ -548,8 +552,7 @@ isCommentChar char =
         code =
             Char.toCode char
     in
-    (code == 0x09) || (code >= 0x20 && code <= 0x7E) || isNonAscii char
-
+    (code == 0x9) || (code >= 0x20 && code <= 0x7E) || isNonAscii char
 
 
 -- CHARACTERS WORTH A NAME
@@ -557,17 +560,17 @@ isCommentChar char =
 
 cr : Char
 cr =
-    Char.fromCode 0x0D
+    Char.fromCode 0xD
 
 
 lf : Char
 lf =
-    Char.fromCode 0x0A
+    Char.fromCode 0xA
 
 
 tab : Char
 tab =
-    Char.fromCode 0x09
+    Char.fromCode 0x9
 
 
 space : Char
@@ -592,18 +595,17 @@ apostropheChar =
 
 crlf : String
 crlf =
-    "\u{000D}\u{000A}"
+    "\r\n"
 
 
 quote : String
 quote =
-    "\u{0022}"
+    "\""
 
 
 apostrophe : String
 apostrophe =
-    "\u{0027}"
-
+    "'"
 
 
 -- WRITING
@@ -634,24 +636,24 @@ escapeChar : Char -> String
 escapeChar char =
     when Char.toCode char is
         0x22 ->
-            "\\\u{0022}"
+            "\\\""
 
         0x5C ->
             "\\\\"
 
-        0x08 ->
+        0x8 ->
             "\\b"
 
-        0x09 ->
+        0x9 ->
             "\\t"
 
-        0x0A ->
+        0xA ->
             "\\n"
 
-        0x0C ->
+        0xC ->
             "\\f"
 
-        0x0D ->
+        0xD ->
             "\\r"
 
         code ->

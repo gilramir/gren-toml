@@ -1,4 +1,4 @@
-module Toml.Write exposing (document, expression, value, key)
+module Toml.Write exposing (document, expression, key, value)
 
 {-| Turning the syntactic AST back into text.
 
@@ -19,25 +19,24 @@ import Array exposing (Array)
 import Basics exposing (..)
 import Maybe exposing (Maybe(..))
 import String
-import Toml.Ast as Ast
-    exposing
-        ( ArrayElement
-        , ArrayLit
-        , Comment
-        , Content(..)
-        , Document
-        , Expression
-        , InlineEntry
-        , InlineTable
-        , Key
-        , KeyVal
-        , Newline(..)
-        , TableHeader
-        , TableKind(..)
-        , Trivia
-        , TriviaPiece(..)
-        , Value(..)
-        )
+import Toml.Ast as Ast exposing
+    ( ArrayElement
+    , ArrayLit
+    , Comment
+    , Content(..)
+    , Document
+    , Expression
+    , InlineEntry
+    , InlineTable
+    , Key
+    , KeyVal
+    , Newline(..)
+    , TableHeader
+    , TableKind(..)
+    , Trivia
+    , TriviaPiece(..)
+    , Value(..)
+    )
 
 
 {-| A whole document.
@@ -104,7 +103,7 @@ newline nl =
             "\n"
 
         CrLf ->
-            "\u{000D}\n"
+            "\r\n"
 
 
 keyval : KeyVal -> String

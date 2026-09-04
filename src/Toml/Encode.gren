@@ -1,9 +1,23 @@
 module Toml.Encode exposing
-    ( Value, Field, field
-    , toDocument, toString
-    , string, int, bigInt, float, bigDecimal, bool
-    , offsetDateTime, localDateTime, localDate, localTime
-    , array, table, inlineTable, tableArray
+    ( Field
+    , Value
+    , array
+    , bigDecimal
+    , bigInt
+    , bool
+    , field
+    , float
+    , inlineTable
+    , int
+    , localDate
+    , localDateTime
+    , localTime
+    , offsetDateTime
+    , string
+    , table
+    , tableArray
+    , toDocument
+    , toString
     )
 
 {-| Writing a TOML file from scratch.
@@ -175,14 +189,13 @@ import Civil.DateTime exposing (DateTime)
 import Civil.Time exposing (Time)
 import Maybe exposing (Maybe(..))
 import String
-import Toml.Ast as Ast
-    exposing
-        ( Content(..)
-        , Document
-        , Expression
-        , Newline(..)
-        , TableKind(..)
-        )
+import Toml.Ast as Ast exposing
+    ( Content(..)
+    , Document
+    , Expression
+    , Newline(..)
+    , TableKind(..)
+    )
 import Toml.Literal as Literal
 import Toml.Write as Write
 
@@ -211,7 +224,6 @@ type alias Field =
 field : String -> Value -> Field
 field key content =
     { key = key, value = content }
-
 
 
 -- WRITING IT OUT
@@ -274,7 +286,6 @@ line content =
 blank : Expression
 blank =
     line (Empty { comment = Nothing })
-
 
 
 -- THE SHAPE OF THE OUTPUT
@@ -394,7 +405,6 @@ flatten content =
             brackets (Array.map braces items)
 
 
-
 -- SCALARS
 
 
@@ -470,7 +480,6 @@ localTime clock =
     Scalar (Literal.localTime clock)
 
 
-
 -- STRUCTURES
 
 
@@ -528,7 +537,6 @@ from a file because its array happened to be empty.
 tableArray : Array (Array Field) -> Value
 tableArray items =
     Sections items
-
 
 
 -- THE ONE-LINE FORMS

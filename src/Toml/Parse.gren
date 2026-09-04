@@ -1,7 +1,9 @@
 module Toml.Parse exposing
     ( Problem(..)
-    , document, expressions
-    , problemToString, rank
+    , document
+    , expressions
+    , problemToString
+    , rank
     )
 
 {-| Turning TOML source into the syntactic AST, keeping every character.
@@ -58,26 +60,25 @@ import Civil.Time as CivilTime
 import Maybe exposing (Maybe(..))
 import String
 import String.Parser.Advanced as P exposing (Parser, Step(..))
-import Toml.Ast as Ast
-    exposing
-        ( ArrayElement
-        , ArrayLit
-        , Comment
-        , Content(..)
-        , Document
-        , Expression
-        , InlineEntry
-        , InlineTable
-        , Key
-        , KeyVal
-        , Newline(..)
-        , SimpleKey
-        , TableHeader
-        , TableKind(..)
-        , Trivia
-        , TriviaPiece(..)
-        , Value(..)
-        )
+import Toml.Ast as Ast exposing
+    ( ArrayElement
+    , ArrayLit
+    , Comment
+    , Content(..)
+    , Document
+    , Expression
+    , InlineEntry
+    , InlineTable
+    , Key
+    , KeyVal
+    , Newline(..)
+    , SimpleKey
+    , TableHeader
+    , TableKind(..)
+    , Trivia
+    , TriviaPiece(..)
+    , Value(..)
+    )
 import Toml.Number as Number
 import Toml.Strings as Strings
 
@@ -269,7 +270,6 @@ type alias P a =
     Parser {} Problem a
 
 
-
 -- THE DOCUMENT
 
 
@@ -312,10 +312,10 @@ expressionsStep found =
                             )
                     , P.end ExpectingEndOfFile
                         |> P.map (\_ -> Done (Array.pushLast expr found))
-                    , -- Neither, so the line goes on past its expression. When
-                      -- the expression was nothing at all, what is really
-                      -- missing is the expression, not the line ending.
-                      P.problem
+                    -- Neither, so the line goes on past its expression. When
+                    -- the expression was nothing at all, what is really
+                    -- missing is the expression, not the line ending.
+                    , P.problem
                         (when expr.content is
                             Empty { comment = Nothing } ->
                                 ExpectingExpression
@@ -355,7 +355,6 @@ contentOfLine =
         , P.succeed (\note -> Empty { comment = note })
             |> P.keep (optional comment)
         ]
-
 
 
 -- WHITESPACE, COMMENTS AND LINE ENDINGS
@@ -418,10 +417,9 @@ orSurrogate isAllowed char =
 newline : P Newline
 newline =
     P.oneOf
-        [ P.token "\u{000D}\u{000A}" ExpectingNewline |> P.map (\_ -> CrLf)
+        [ P.token "\r\n" ExpectingNewline |> P.map (\_ -> CrLf)
         , P.chompChar '\n' ExpectingNewline |> P.map (\_ -> Lf)
         ]
-
 
 
 -- KEYS
@@ -440,12 +438,10 @@ key =
 
 dottedStep :
     Array { wsBefore : String, wsAfter : String, key : SimpleKey }
-    ->
-        P
-            (Step
-                (Array { wsBefore : String, wsAfter : String, key : SimpleKey })
-                (Array { wsBefore : String, wsAfter : String, key : SimpleKey })
-            )
+    -> P (Step
+            (Array { wsBefore : String, wsAfter : String, key : SimpleKey })
+            (Array { wsBefore : String, wsAfter : String, key : SimpleKey })
+         )
 dottedStep found =
     P.oneOf
         [ -- Backtrackable because the whitespace before the dot has to be given
@@ -528,7 +524,6 @@ quotedKey =
             )
 
 
-
 -- TABLE HEADERS
 
 
@@ -556,7 +551,6 @@ bracketed kind open close =
         |> P.skip (P.token close ExpectingTableClose)
 
 
-
 -- KEY-VALUE PAIRS
 
 
@@ -573,7 +567,6 @@ keyval =
         |> P.skip (P.chompChar '=' ExpectingEquals)
         |> P.keep ws
         |> P.keep value
-
 
 
 -- VALUES
@@ -624,7 +617,6 @@ booleanValue =
         , P.keyword "false" ExpectingValue
             |> P.map (\_ -> BooleanVal { raw = "false", value = False })
         ]
-
 
 
 -- NUMBERS AND DATE-TIMES
@@ -756,7 +748,6 @@ classifyNumber raw =
                     P.problem (MalformedValue raw)
 
 
-
 -- STRING LITERALS
 
 
@@ -821,10 +812,8 @@ singleLineStep delim escapes =
             P.problem ExpectingStringCharacter
         , P.chompIf
             (\c ->
-                c
-                    /= '\n'
-                    && c
-                    /= '\u{000D}'
+                c /= '\n'
+                    && c /= '\r'
                     && not (escapes && c == '\\')
             )
             ExpectingStringCharacter
@@ -869,7 +858,6 @@ multiLineStep delim escapes =
             ExpectingStringCharacter
             |> P.map (\_ -> Loop {})
         ]
-
 
 
 -- ARRAYS AND INLINE TABLES
@@ -966,7 +954,6 @@ inlineTail found before pair =
             )
 
 
-
 -- TRIVIA
 
 
@@ -1003,7 +990,6 @@ triviaStep found =
             |> P.keep newline
         , P.succeed (Done found)
         ]
-
 
 
 -- SMALL HELPERS

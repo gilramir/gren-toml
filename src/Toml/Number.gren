@@ -1,4 +1,4 @@
-module Toml.Number exposing (integer, float)
+module Toml.Number exposing (float, integer)
 
 {-| Reading TOML's integers and floats out of the text they were written as.
 
@@ -202,7 +202,6 @@ zeroPrefixable body =
     run { isDigit = Char.isDigit, allowLeadingZero = True } body
 
 
-
 -- THE UNDERSCORE RULE
 
 
@@ -253,7 +252,6 @@ run rules body =
                             else
                                 Just soFar.digits
                         )
-
 
 
 -- SMALL HELPERS

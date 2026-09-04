@@ -1,10 +1,25 @@
 module Toml.Edit exposing
-    ( get, set, remove, removeTable
-    , rename, renameTable
-    , comments, setComments, paths
-    , string, int, bigInt, float, bigDecimal, bool
-    , offsetDateTime, localDateTime, localDate, localTime
-    , array, inlineTable
+    ( array
+    , bigDecimal
+    , bigInt
+    , bool
+    , comments
+    , float
+    , get
+    , inlineTable
+    , int
+    , localDate
+    , localDateTime
+    , localTime
+    , offsetDateTime
+    , paths
+    , remove
+    , removeTable
+    , rename
+    , renameTable
+    , set
+    , setComments
+    , string
     )
 
 {-| Changing a TOML file and leaving the rest of it alone.
@@ -229,20 +244,18 @@ import Civil.DateTime as DateTime exposing (DateTime)
 import Civil.Time as CivilTime exposing (Time)
 import Maybe exposing (Maybe(..))
 import String
-import Toml.Ast as Ast
-    exposing
-        ( Comment
-        , Content(..)
-        , Document
-        , Expression
-        , Key
-        , Newline(..)
-        , SimpleKey
-        , TableKind(..)
-        , Value(..)
-        )
+import Toml.Ast as Ast exposing
+    ( Comment
+    , Content(..)
+    , Document
+    , Expression
+    , Key
+    , Newline(..)
+    , SimpleKey
+    , TableKind(..)
+    , Value(..)
+    )
 import Toml.Literal as Literal
-
 
 
 -- LOOKING AROUND
@@ -423,7 +436,6 @@ setTrailingComment text expression =
             expression
 
 
-
 -- CHANGING
 
 
@@ -471,9 +483,7 @@ replaceValue content expression =
                 pair =
                     fields.keyval
             in
-            { expression
-                | content = Pair { fields | keyval = { pair | value = content } }
-            }
+            { expression | content = Pair { fields | keyval = { pair | value = content } } }
 
         _ ->
             expression
@@ -616,10 +626,7 @@ renameKeyPart at name expression =
                 pair =
                     fields.keyval
             in
-            { expression
-                | content =
-                    Pair { fields | keyval = { pair | key = replacePart at name pair.key } }
-            }
+            { expression | content = Pair { fields | keyval = { pair | key = replacePart at name pair.key } } }
 
         _ ->
             expression
@@ -633,10 +640,7 @@ renameHeaderPart at name expression =
                 head =
                     fields.header
             in
-            { expression
-                | content =
-                    Header { fields | header = { head | key = replacePart at name head.key } }
-            }
+            { expression | content = Header { fields | header = { head | key = replacePart at name head.key } } }
 
         _ ->
             expression
@@ -736,11 +740,8 @@ under path header expression =
 
 prefixOf : Array String -> Array String -> Bool
 prefixOf path candidate =
-    Array.length candidate
-        >= Array.length path
-        && Array.takeFirst (Array.length path) candidate
-        == path
-
+    Array.length candidate >= Array.length path
+        && Array.takeFirst (Array.length path) candidate == path
 
 
 {-| Put an edited expression list back into its document, with the two
@@ -808,7 +809,6 @@ setLastNewline ending expressions =
 
         Nothing ->
             expressions
-
 
 
 -- FINDING
@@ -922,7 +922,6 @@ cut from to expressions =
         (Array.dropFirst to expressions)
 
 
-
 -- INSERTING
 
 
@@ -1016,8 +1015,7 @@ lastOf : Array String -> Document -> Maybe Int
 lastOf tablePath document =
     Array.map2
         (\expression header ->
-            header
-                == tablePath
+            header == tablePath
                 && (when expression.content is
                         Empty _ ->
                             False
@@ -1169,7 +1167,6 @@ styleOf document =
     Array.mapAndKeepJust .newline document.expressions
         |> Array.first
         |> Maybe.withDefault Lf
-
 
 
 -- VALUES

@@ -1,8 +1,19 @@
 module Toml.Literal exposing
-    ( string, int, bigInt, float, bigDecimal, bool
-    , offsetDateTime, localDateTime, localDate, localTime
-    , array, inlineTable
-    , key, simpleKey, path
+    ( array
+    , bigDecimal
+    , bigInt
+    , bool
+    , float
+    , inlineTable
+    , int
+    , key
+    , localDate
+    , localDateTime
+    , localTime
+    , offsetDateTime
+    , path
+    , simpleKey
+    , string
     )
 
 {-| Writing a value that was not read from a file.
@@ -92,7 +103,6 @@ simpleKey name =
             Strings.escape name
     , value = name
     }
-
 
 
 -- VALUES
@@ -244,7 +254,6 @@ localDate day =
 localTime : Time -> Value
 localTime clock =
     LocalTimeVal { raw = CivilTime.toString clock, value = clock }
-
 
 
 -- THE ONE-LINE COMPOSITES

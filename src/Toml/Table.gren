@@ -1,9 +1,17 @@
 module Toml.Table exposing
-    ( Table, Value(..)
+    ( Error
+    , Reason(..)
+    , Table
+    , Value(..)
+    , count
+    , entries
+    , errorToString
     , fromDocument
-    , get, entries, keys, values
-    , member, count, isEmpty
-    , Error, Reason(..), errorToString
+    , get
+    , isEmpty
+    , keys
+    , member
+    , values
     )
 
 {-| The other layer: a TOML document as the data it describes.
@@ -257,7 +265,6 @@ errorToString error =
         ++ error.path
 
 
-
 -- READING
 
 
@@ -310,7 +317,6 @@ which is a table that exists and is empty.
 isEmpty : Table -> Bool
 isEmpty (Table table) =
     Dict.isEmpty table.fields
-
 
 
 -- BUILDING
@@ -371,7 +377,6 @@ pathOf name =
     Array.pushFirst name.first.value (Array.map (\part -> part.key.value) name.rest)
 
 
-
 -- THE THREE THINGS A STATEMENT CAN DO
 
 
@@ -380,21 +385,20 @@ yet -- an implicit prefix from an earlier `[a.b.c]` is the one case where it can
 -}
 defineTable : Array String -> Table -> Result Error Table
 defineTable path root =
-    updateAt HeaderWalk path root <|
-        \existing ->
-            when existing is
-                Nothing ->
-                    Ok (TableValue (emptyTable Explicit))
+    updateAt HeaderWalk path root <| \existing ->
+        when existing is
+            Nothing ->
+                Ok (TableValue (emptyTable Explicit))
 
-                Just (TableValue (Table found)) ->
-                    if found.origin == Implicit then
-                        Ok (TableValue (Table { found | origin = Explicit }))
+            Just (TableValue (Table found)) ->
+                if found.origin == Implicit then
+                    Ok (TableValue (Table { found | origin = Explicit }))
 
-                    else
-                        Err TableDefinedTwice
-
-                Just _ ->
+                else
                     Err TableDefinedTwice
+
+            Just _ ->
+                Err TableDefinedTwice
 
 
 {-| `[[a.b]]`. Either the first item of a new array of tables, or another item
@@ -403,17 +407,16 @@ literal is a different kind of thing and cannot be extended this way.
 -}
 appendTable : Array String -> Table -> Result Error Table
 appendTable path root =
-    updateAt HeaderWalk path root <|
-        \existing ->
-            when existing is
-                Nothing ->
-                    Ok (TableArrayValue [ emptyTable Explicit ])
+    updateAt HeaderWalk path root <| \existing ->
+        when existing is
+            Nothing ->
+                Ok (TableArrayValue [ emptyTable Explicit ])
 
-                Just (TableArrayValue items) ->
-                    Ok (TableArrayValue (Array.pushLast (emptyTable Explicit) items))
+            Just (TableArrayValue items) ->
+                Ok (TableArrayValue (Array.pushLast (emptyTable Explicit) items))
 
-                Just _ ->
-                    Err NotAnArrayOfTables
+            Just _ ->
+                Err NotAnArrayOfTables
 
 
 {-| `a.b = v`, inside whatever table the last header put us in.
@@ -430,17 +433,14 @@ insertPair current path content root =
             Err { path = join path, reason = reason }
 
         Ok lowered ->
-            descendTo current root <|
-                \table ->
-                    updateAt DottedWalk path table <|
-                        \existing ->
-                            when existing is
-                                Nothing ->
-                                    Ok lowered
+            descendTo current root <| \table ->
+            updateAt DottedWalk path table <| \existing ->
+                when existing is
+                    Nothing ->
+                        Ok lowered
 
-                                Just _ ->
-                                    Err KeyDefinedTwice
-
+                    Just _ ->
+                        Err KeyDefinedTwice
 
 
 -- WALKING THE TREE
@@ -610,7 +610,6 @@ passable walk (Table found) =
             found.origin == Implicit || found.origin == Dotted
 
 
-
 -- LOWERING A VALUE
 
 
@@ -711,14 +710,13 @@ inlineEntry entry soFar =
                     Err { path = join path, reason = reason }
 
                 Ok lowered ->
-                    updateAt DottedWalk path built <|
-                        \existing ->
-                            when existing is
-                                Nothing ->
-                                    Ok lowered
+                    updateAt DottedWalk path built <| \existing ->
+                        when existing is
+                            Nothing ->
+                                Ok lowered
 
-                                Just _ ->
-                                    Err KeyDefinedTwice
+                            Just _ ->
+                                Err KeyDefinedTwice
 
 
 {-| Close an inline table, and everything an inline table contains.
@@ -739,7 +737,6 @@ seal (Table table) =
                 )
                 table.fields
         }
-
 
 
 -- SMALL HELPERS

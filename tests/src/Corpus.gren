@@ -121,7 +121,7 @@ restoreBom bytes =
                 |> Maybe.withDefault False
     in
     if found then
-        "﻿"
+        "\u{FEFF}"
 
     else
         ""
