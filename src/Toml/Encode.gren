@@ -1,10 +1,12 @@
 module Toml.Encode exposing
-    ( Field
+    ( Comments
+    , Field
     , Value
     , array
     , bigDecimal
     , bigInt
     , bool
+    , commented
     , field
     , float
     , inlineTable
@@ -61,11 +63,16 @@ after a `[header]` would land inside that header's table rather than beside it.
 
 ## The style
 
-One space either side of the equals sign, one blank line before each header
-except the first, no indentation, `\\n` line endings, and a final newline. There
-is no way to change any of that, on the grounds that a file this produced has no
-author to have an opinion -- and the moment one does, the file should be read and
-*edited* rather than regenerated, which is what the rest of this package is for.
+One space either side of the equals sign, one blank line before each header and
+before each commented field, none at the top of the file or under a header, no
+indentation, `\\n` line endings, and a final newline. There is no way to change
+any of that, on the grounds that a file this produced has no author to have an
+opinion -- and the moment one does, the file should be read and *edited* rather
+than regenerated, which is what the rest of this package is for.
+
+Comments are the exception that proves it, since a comment is content rather
+than style: [`commented`](#commented) puts one on a field, and where the blank
+line goes around it is still not yours to say.
 
 
 ## A whole file
@@ -163,6 +170,11 @@ Two things in that example are worth pointing at:
 @docs Value, Field, field
 
 
+## Comments
+
+@docs Comments, commented
+
+
 ## Writing it out
 
 @docs toDocument, toString
@@ -208,11 +220,36 @@ type Value
     | Sections (Array (Array Field))
 
 
-{-| A key and the value under it.
+{-| A key, the value under it, and the comments that explain it.
+
+Build one with [`field`](#field) and, if it needs explaining,
+[`commented`](#commented). The record is open so that it can be read apart;
+constructing one by hand works too and only saves a function call.
+
 -}
 type alias Field =
     { key : String
     , value : Value
+    , comments : Comments
+    }
+
+
+{-| Comments on a field: a block of whole lines above it, and one after the
+value on the same line.
+
+Each string is the text *after* the `#`, the leading space included, because
+`# note` and `#note` are different files and neither is this module's to choose.
+
+There is no blank-line field here, unlike
+[`Toml.Edit.Comments`](Toml-Edit#Comments), for the reason the whole of [the
+style](#the-style) gives: a file this module wrote has no author to have an
+opinion about its spacing, so the spacing is decided here. A commented field
+gets a blank line above it.
+
+-}
+type alias Comments =
+    { leading : Array String
+    , trailing : Maybe String
     }
 
 
@@ -223,7 +260,49 @@ type alias Field =
 -}
 field : String -> Value -> Field
 field key content =
-    { key = key, value = content }
+    { key = key, value = content, comments = { leading = [], trailing = Nothing } }
+
+
+{-| Explain a field.
+
+    Toml.Encode.toString
+        [ Toml.Encode.field "a" (Toml.Encode.int 1)
+        , Toml.Encode.field "port" (Toml.Encode.int 8080)
+            |> Toml.Encode.commented
+                { leading = [ " What to listen on." ], trailing = Just " http" }
+        ]
+
+    -->  a = 1
+    -->
+    -->  # What to listen on.
+    -->  port = 8080 # http
+
+The blank line above the block is [the style](#the-style) rather than a choice,
+and it is not written at the top of a file or under a `[header]`, where there
+would be nothing above it to separate it from.
+
+A file nobody can read is not much better than no file, and comments are the
+reason to reach for a TOML library that keeps them rather than one that does
+not. This is that reason applied to the direction that writes a file instead of
+reading one.
+
+**On a field whose value is a [`table`](#table) or a
+[`tableArray`](#tableArray)**, the comments go with the `[header]` line, since
+that is the line the field became. On a `tableArray` they go above the first
+`[[header]]` only -- they explain the key, and repeating them over every item
+would explain nothing.
+
+**On a field inside an [`array`](#array) or an
+[`inlineTable`](#inlineTable)** they are dropped, because there is no line for
+them to be on. That is the same boundary
+[`Toml.Edit`](Toml-Edit#what-a-path-means-here) draws at a brace and for the
+same reason: what is inside one is written on one line, and a comment runs to
+the end of a line.
+
+-}
+commented : Comments -> Field -> Field
+commented note it =
+    { it | comments = note }
 
 
 -- WRITING IT OUT
@@ -235,31 +314,83 @@ and which [`Toml.Edit`](Toml-Edit) can go on changing.
 toDocument : Array Field -> Document
 toDocument fields =
     { hasBom = False
-    , expressions = Array.pushLast endOfFile (withoutLeadingBlank (section [] fields))
+    , expressions = Array.pushLast endOfFile (tidyBlanks (section [] fields))
     }
 
 
-{-| The blank line before a `[header]` separates it from what came above. At the
-top of the file there is nothing above it, and a file that opens with an empty
-line is not what anyone asked for.
--}
-withoutLeadingBlank : Array Expression -> Array Expression
-withoutLeadingBlank expressions =
-    when Array.first expressions is
-        Just first ->
-            when first.content is
-                Empty fields ->
-                    if fields.comment == Nothing then
-                        Array.dropFirst 1 expressions
+{-| Take out the blank lines that ask to separate something from nothing.
 
-                    else
-                        expressions
+Two things put a blank line into the output and neither can see what is around
+it: a `[header]` gets one to hold it off what is above, and so does a commented
+field. That is right in the middle of a file and wrong at two of its edges, so
+rather than teach both of them where they are, the blanks go in unconditionally
+and the ones with nothing to separate come out again here:
+
+  - **At the top of the file**, where there is nothing above to be held off.
+  - **Between a `[header]` and the first key of its own table**, where a blank
+    would push the key away from the header it belongs to. Not between a header
+    and a *nested* header, which is two sections meeting and wants the space --
+    which is why this looks at what follows the blank as well as at what
+    precedes it.
+
+-}
+tidyBlanks : Array Expression -> Array Expression
+tidyBlanks expressions =
+    Array.indexedMap
+        (\index expression ->
+            if isPlainBlank expression && not (separatesAnything index expressions) then
+                Nothing
+
+            else
+                Just expression
+        )
+        expressions
+        |> Array.mapAndKeepJust identity
+
+
+{-| Whether the blank line at `index` has something on both sides of it that
+wants to be kept apart.
+
+The `index <= 0` guard is not defensive. `Array.get -1` in Gren is the *last*
+element, so without it the first line of the file would be asked whether the
+last one wants a blank after it, and the answer would usually be yes.
+
+-}
+separatesAnything : Int -> Array Expression -> Bool
+separatesAnything index expressions =
+    when
+        (if index <= 0 then
+            Nothing
+
+         else
+            Array.get (index - 1) expressions
+        )
+    is
+        Nothing ->
+            False
+
+        Just previous ->
+            when previous.content is
+                Header _ ->
+                    when Maybe.map .content (Array.get (index + 1) expressions) is
+                        Just (Header _) ->
+                            True
+
+                        _ ->
+                            False
 
                 _ ->
-                    expressions
+                    not (isPlainBlank previous)
 
-        Nothing ->
-            expressions
+
+isPlainBlank : Expression -> Bool
+isPlainBlank expression =
+    when expression.content is
+        Empty fields ->
+            fields.comment == Nothing
+
+        _ ->
+            False
 
 
 {-| The fields as text.
@@ -308,7 +439,7 @@ section path fields =
             Array.keepIf (\it -> isSection it.value) fields
     in
     Array.prepend
-        (Array.map (keyLine path) leaves)
+        (Array.mapAndFlatten (keyLine path) leaves)
         (Array.mapAndFlatten (header path) nested)
 
 
@@ -332,20 +463,71 @@ isSection content =
             Array.length items > 0
 
 
-keyLine : Array String -> Field -> Expression
+{-| One `key = value` line, with its comment block above it and its own comment
+after it.
+
+An array rather than an expression because the comment block is lines of the
+file too, and the blank line that goes above a commented field is one more --
+`tidyBlanks` takes that one out again if there is nothing above to separate it
+from.
+
+-}
+keyLine : Array String -> Field -> Array Expression
 keyLine _ it =
-    line
-        (Pair
-            { keyval =
-                { key = Literal.key [ it.key ]
-                , wsBeforeEq = " "
-                , wsAfterEq = " "
-                , value = flatten it.value
+    Array.pushLast
+        (line
+            (Pair
+                { keyval =
+                    { key = Literal.key [ it.key ]
+                    , wsBeforeEq = " "
+                    , wsAfterEq = " "
+                    , value = flatten it.value
+                    }
+                , trailing = trailingSpace it.comments.trailing
+                , comment = Maybe.map (\text -> { text = text }) it.comments.trailing
                 }
-            , trailing = ""
-            , comment = Nothing
-            }
+            )
         )
+        (block it.comments.leading)
+
+
+{-| What goes above a `[header]`: the blank line that holds it off what came
+before, and the comment block if it has one -- which brings its own blank line,
+so there is exactly one either way.
+-}
+opening : Array String -> Array Expression
+opening leading =
+    if Array.length leading == 0 then
+        [ blank ]
+
+    else
+        block leading
+
+
+{-| The comment block above a line, with the blank line that separates it from
+whatever is above. Nothing at all when there are no comments.
+-}
+block : Array String -> Array Expression
+block leading =
+    if Array.length leading == 0 then
+        []
+
+    else
+        Array.prepend
+            [ blank ]
+            (Array.map (\text -> line (Empty { comment = Just { text = text } })) leading)
+
+
+{-| `x = 1# note` is legal TOML and nobody writes it.
+-}
+trailingSpace : Maybe String -> String
+trailingSpace comment =
+    when comment is
+        Just _ ->
+            " "
+
+        Nothing ->
+            ""
 
 
 {-| A `[header]` section, or a `[[header]]` for every item of a table array.
@@ -359,24 +541,40 @@ header path it =
     when it.value is
         Section fields ->
             Array.prepend
-                [ blank, line (headerLine Std here) ]
+                (Array.prepend
+                    (opening it.comments.leading)
+                    [ line (headerLine Std here it.comments.trailing) ]
+                )
                 (section here fields)
 
         Sections items ->
-            Array.mapAndFlatten
-                (\fields ->
+            Array.indexedMap
+                (\index fields ->
                     Array.prepend
-                        [ blank, line (headerLine ArrayOfTables here) ]
-                        (section here fields)
+                        -- The comments explain the key, so they go over the
+                        -- first item alone. Repeated above every `[[header]]`
+                        -- they would explain nothing and be four copies of one
+                        -- sentence to keep in step.
+                        (if index == 0 then
+                            opening it.comments.leading
+
+                         else
+                            [ blank ]
+                        )
+                        (Array.prepend
+                            [ line (headerLine ArrayOfTables here it.comments.trailing) ]
+                            (section here fields)
+                        )
                 )
                 items
+                |> Array.flatten
 
         Scalar _ ->
             []
 
 
-headerLine : TableKind -> Array String -> Content
-headerLine kind path =
+headerLine : TableKind -> Array String -> Maybe String -> Content
+headerLine kind path comment =
     Header
         { header =
             { kind = kind
@@ -384,8 +582,8 @@ headerLine kind path =
             , key = Literal.key path
             , wsAfter = ""
             }
-        , trailing = ""
-        , comment = Nothing
+        , trailing = trailingSpace comment
+        , comment = Maybe.map (\text -> { text = text }) comment
         }
 
 

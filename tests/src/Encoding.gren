@@ -297,6 +297,131 @@ encodingSuite =
                             (Decode.field "a" Decode.string)
                         )
                     )
+            -- COMMENTS
+            , U.test "a commented field gets its block, and a blank line above it" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (lines
+                            [ "a = 1"
+                            , ""
+                            , "# What to listen on."
+                            , "port = 8080 # http"
+                            , ""
+                            ]
+                        )
+                        (Encode.toString
+                            [ field "a" (Encode.int 1)
+                            , field "port" (Encode.int 8080)
+                                |> Encode.commented
+                                    { leading = [ " What to listen on." ]
+                                    , trailing = Just " http"
+                                    }
+                            ]
+                        )
+                    )
+            , U.test "and no blank line when it is the first thing in the file" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (lines [ "# What to listen on.", "port = 8080", "" ])
+                        (Encode.toString
+                            [ field "port" (Encode.int 8080)
+                                |> Encode.commented
+                                    { leading = [ " What to listen on." ], trailing = Nothing }
+                            ]
+                        )
+                    )
+            , U.test "a commented table puts them over its header" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (lines
+                            [ "# Where to reach it."
+                            , "[server]"
+                            , "host = \"example.com\""
+                            , ""
+                            ]
+                        )
+                        (Encode.toString
+                            [ field "server"
+                                (Encode.table [ field "host" (Encode.string "example.com") ])
+                                |> Encode.commented
+                                    { leading = [ " Where to reach it." ], trailing = Nothing }
+                            ]
+                        )
+                    )
+            , U.test "and a commented table array explains the key once, not once per item" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (lines
+                            [ "# Everyone we talk to."
+                            , "[[peer]]"
+                            , "name = \"alpha\""
+                            , ""
+                            , "[[peer]]"
+                            , "name = \"beta\""
+                            , ""
+                            ]
+                        )
+                        (Encode.toString
+                            [ field "peer"
+                                (Encode.tableArray
+                                    [ [ field "name" (Encode.string "alpha") ]
+                                    , [ field "name" (Encode.string "beta") ]
+                                    ]
+                                )
+                                |> Encode.commented
+                                    { leading = [ " Everyone we talk to." ], trailing = Nothing }
+                            ]
+                        )
+                    )
+            , U.test "the first key under a header is not pushed away from it" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (lines
+                            [ "[server]"
+                            , "# What to listen on."
+                            , "port = 8080"
+                            , ""
+                            ]
+                        )
+                        (Encode.toString
+                            [ field "server"
+                                (Encode.table
+                                    [ field "port" (Encode.int 8080)
+                                        |> Encode.commented
+                                            { leading = [ " What to listen on." ]
+                                            , trailing = Nothing
+                                            }
+                                    ]
+                                )
+                            ]
+                        )
+                    )
+            , U.test "a comment inside braces has no line to be on and is dropped" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (lines [ "point = { x = 1 }", "" ])
+                        (Encode.toString
+                            [ field "point"
+                                (Encode.inlineTable
+                                    [ field "x" (Encode.int 1)
+                                        |> Encode.commented
+                                            { leading = [ " across" ], trailing = Nothing }
+                                    ]
+                                )
+                            ]
+                        )
+                    )
+            , U.test "what it wrote parses back, comments and all" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok 8080)
+                        (readBack
+                            [ field "port" (Encode.int 8080)
+                                |> Encode.commented
+                                    { leading = [ " What to listen on." ], trailing = Just " http" }
+                            ]
+                            (Decode.field "port" Decode.int)
+                        )
+                    )
             -- AND THE RESULT IS SOMETHING Toml.Edit CAN GO ON WORKING WITH
             , U.test "what comes out is a document, not just text" <| \_ ->
                 Task.succeed

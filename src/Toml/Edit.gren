@@ -1,5 +1,7 @@
 module Toml.Edit exposing
-    ( array
+    ( Comments
+    , Value
+    , array
     , bigDecimal
     , bigInt
     , bool
@@ -8,9 +10,11 @@ module Toml.Edit exposing
     , get
     , inlineTable
     , int
+    , introduce
     , localDate
     , localDateTime
     , localTime
+    , member
     , offsetDateTime
     , paths
     , remove
@@ -32,6 +36,12 @@ Every byte the edit did not touch comes back as it was: the blank lines, the
 alignment, the comments, and the `0x1F` you wrote instead of `31`. That is what
 this module is for, and it is why the AST underneath it stores whitespace as
 text -- see [`Toml.Ast`](Toml-Ast).
+
+**And an edit that changes nothing touches nothing.** Setting a value that is
+already what the file says leaves the line exactly as it is written -- see
+[`set`](#set), where the reason it has to work that way is spelled out. It is
+what makes "write my whole configuration back" a safe thing for a program to
+do on every save.
 
 
 ## Which comments belong to a key
@@ -150,14 +160,34 @@ header comes with the first key and the second lands beside it:
     -->  ip = "10.0.0.3"
     -->  role = "cache"
 
-**Write comments.**
+**Write comments.** `blankBefore` is how a block gets an empty line above it,
+which is the only way to ask for one -- a document is a list of expressions and
+has no lines to insert between:
 
     Toml.Edit.setComments [ "database", "enabled" ]
-        { leading = [ " Turn this off to go quiet." ], trailing = Just " on by default" }
+        { blankBefore = False
+        , leading = [ " Turn this off to go quiet." ]
+        , trailing = Just " on by default"
+        }
 
     -->  [database]
     -->  # Turn this off to go quiet.
     -->  enabled = true # on by default
+
+**Write a value and explain it, but only the first time.**
+[`introduce`](#introduce) is [`set`](#set) plus the comments a key gets when
+this is the call that invented it, and nothing at all to a key already in the
+file:
+
+    Toml.Edit.introduce [ "database", "timeout" ]
+        { blankBefore = True, leading = [ " Seconds." ], trailing = Nothing }
+        (Toml.Edit.int 30)
+
+    -->  ports = [ 8000, 8001, 8002 ]
+    -->  ...
+    -->
+    -->  # Seconds.
+    -->  timeout = 30
 
 **Rename.** A key by [`rename`](#rename) and a table by
 [`renameTable`](#renameTable), which takes the headers nested under it too:
@@ -195,15 +225,27 @@ To read the edited file back without writing it out and parsing it again, hand
 the document to [`Toml.Decode.fromDocument`](Toml-Decode#fromDocument).
 
 
-## This is not the module for a new file
+## The file that is not there yet
 
-There is no `Toml.Edit.empty`, because an empty document has no formatting to
-preserve and this module has nothing to offer it. Building a file from nothing
-is [`Toml.Encode`](Toml-Encode); its
-[`toDocument`](Toml-Encode#toDocument) hands back a `Document`, so a file can be
-built there and then edited here if there is a reason to.
+A program that keeps a config file has to handle its first run, and the tidy
+way to do that is not to handle it: [`Toml.empty`](Toml#empty) is a document
+with nothing in it, every key is missing from it, and [`set`](#set) adds a key
+that is missing. So
 
-@docs get, set, remove, removeTable
+    Toml.parseBytes bytes
+        |> Result.withDefault Toml.empty
+        |> Toml.Edit.introduce [ "theme" ] note (Toml.Edit.string "dark")
+
+creates the file and updates it with the same code, and there is no second
+description of the file's shape to drift out of step with the first.
+
+[`Toml.Encode`](Toml-Encode) is the other way to build a file from nothing, and
+it is the better one when the shape of the file comes from the shape of the
+data -- nested tables, arrays of tables, a section per item. This module is the
+better one when the file has a fixed set of keys and the same code has to cope
+with the file already existing.
+
+@docs get, member, set, introduce, remove, removeTable
 
 
 ## Renaming
@@ -213,12 +255,17 @@ built there and then edited here if there is a reason to.
 
 ## Comments
 
-@docs comments, setComments
+@docs Comments, comments, setComments
 
 
 ## Looking around
 
 @docs paths
+
+
+## The type a value has
+
+@docs Value
 
 
 ## Values to put in
@@ -253,9 +300,51 @@ import Toml.Ast as Ast exposing
     , Newline(..)
     , SimpleKey
     , TableKind(..)
-    , Value(..)
     )
 import Toml.Literal as Literal
+
+
+{-| A value on its way into a document, built by one of the functions at the
+bottom of this module.
+
+The same type as [`Toml.Ast.Value`](Toml-Ast#Value), named here so that an edit
+needs one import rather than two. The constructors are in `Toml.Ast`, for
+reading a value apart; nothing here needs them, because a value is built by
+[`string`](#string), [`int`](#int) and the rest.
+
+-}
+type alias Value =
+    Ast.Value
+
+
+{-| The comments that belong to one key.
+
+    { blankBefore = True
+    , leading = [ " How long to wait." ]
+    , trailing = Just " seconds"
+    }
+
+    -->  <a blank line>
+    -->  # How long to wait.
+    -->  timeout = 30 # seconds
+
+`leading` and `trailing` are the text *after* the `#`, the leading space
+included, because `# note` and `#note` are different files and neither is this
+module's to choose.
+
+`blankBefore` is whether an empty line sits above the block. It is here rather
+than left to whoever is writing the file because there is no other way to ask
+for one -- a document has no lines to insert, only expressions -- and because a
+comment block hard against the line above it reads as a continuation of that
+line. At the very top of a document it is always `False`: a file does not begin
+with a blank line.
+
+-}
+type alias Comments =
+    { blankBefore : Bool
+    , leading : Array String
+    , trailing : Maybe String
+    }
 
 
 -- LOOKING AROUND
@@ -282,6 +371,20 @@ get path document =
             )
 
 
+{-| Whether a key is in the document at all.
+
+[`get`](#get) answers this too, but answering it with `get` means holding a
+`Toml.Ast.Value` in order to throw it away, and the question a program writing
+a config file asks is usually this one: **is this key already here, or am I the
+one putting it there?** That is what decides whether it needs an explanation
+written above it -- see [`introduce`](#introduce).
+
+-}
+member : Array String -> Document -> Bool
+member path document =
+    indexOf path document /= Nothing
+
+
 {-| Every key in the document, in the order the file writes them.
 
 Table headers are not keys and are not here; the path of a key written under
@@ -306,20 +409,25 @@ paths document =
 
 {-| The comments that belong to a key, by the convention above.
 
-    { leading = [ " how long to wait" ], trailing = Just " seconds" }
+    { blankBefore = True
+    , leading = [ " how long to wait" ]
+    , trailing = Just " seconds"
+    }
 
-The text is what came after the `#`, leading space included, which is what
-[`setComments`](#setComments) takes back.
+This and [`setComments`](#setComments) are inverses: what one reads, the other
+writes back unchanged. A key that is not in the document has no comments and
+reads as `{ blankBefore = False, leading = [], trailing = Nothing }`.
 
 -}
-comments : Array String -> Document -> { leading : Array String, trailing : Maybe String }
+comments : Array String -> Document -> Comments
 comments path document =
     when indexOf path document is
         Nothing ->
-            { leading = [], trailing = Nothing }
+            { blankBefore = False, leading = [], trailing = Nothing }
 
         Just index ->
-            { leading =
+            { blankBefore = isBlank (firstOwned index document.expressions - 1) document.expressions
+            , leading =
                 Array.slice (firstOwned index document.expressions) index document.expressions
                     |> Array.mapAndKeepJust ownComment
             , trailing =
@@ -347,26 +455,59 @@ ownComment expression =
             Nothing
 
 
+{-| Whether the expression at `index` is an empty line with no comment on it.
+
+`False` for an index off either end, which is what makes the top of the file
+answer "no blank line above": there is nothing above it to be blank.
+
+-}
+isBlank : Int -> Array Expression -> Bool
+isBlank index expressions =
+    when Array.get index expressions is
+        Just expression ->
+            when expression.content is
+                Empty fields ->
+                    fields.comment == Nothing
+
+                _ ->
+                    False
+
+        Nothing ->
+            False
+
+
 {-| Set the comments that belong to a key, by the same convention
 [`comments`](#comments) reads them by.
 
     Toml.Edit.setComments [ "timeout" ]
-        { leading = [ " How long to wait." ], trailing = Just " seconds" }
+        { blankBefore = True
+        , leading = [ " How long to wait." ]
+        , trailing = Just " seconds"
+        }
 
+    -->  <a blank line>
     -->  # How long to wait.
     -->  timeout = 30 # seconds
 
-The text is what comes *after* the `#`, which is what `comments` hands back, so
-the two are inverses. The leading space is yours to include or leave out:
-`# note` and `#note` are different files and neither is this module's to choose.
+`comments` and this are inverses, so what one reads the other writes back
+unchanged -- including the blank line, which is why [`Comments`](#Comments) has
+a field for it.
 
 `leading = []` takes the block above the key away and `trailing = Nothing` takes
 the comment off the line. Anything separated from the key by a blank line is not
 the key's and is left alone, which is the same blank line that protects it from
 [`remove`](#remove). A key that is not there is left alone too.
 
+`blankBefore = True` puts a blank line above the block if there is not one
+already, and `False` takes one away if there is. Both are no-ops at the top of
+the document, where there is no line above to be blank. Taking one away is the
+one thing here that reaches past the key's own lines, so it is worth knowing
+what it does: the blank line is what separates a floating comment from an owned
+one, and removing it makes the block above join this key's -- which is to say
+it will go when this key goes.
+
 -}
-setComments : Array String -> { leading : Array String, trailing : Maybe String } -> Document -> Document
+setComments : Array String -> Comments -> Document -> Document
 setComments path wanted document =
     when indexOf path document is
         Nothing ->
@@ -388,17 +529,49 @@ setComments path wanted document =
                             }
                         )
                         wanted.leading
+
+                start =
+                    firstOwned index document.expressions
             in
             rebuild document
                 (Array.prepend
                     (Array.prepend
-                        (Array.takeFirst (firstOwned index document.expressions) document.expressions)
+                        (spacedTo wanted.blankBefore
+                            (styleOf document)
+                            (Array.takeFirst start document.expressions)
+                        )
                         block
                     )
                     (Array.dropFirst index document.expressions
                         |> Array.update 0 (setTrailingComment wanted.trailing)
                     )
                 )
+
+
+{-| Everything above a key's comment block, with a blank line at the end of it
+or without one, as asked.
+
+Nothing happens for an empty array: the block is at the top of the document and
+there is no line above it to be blank.
+
+-}
+spacedTo : Bool -> Newline -> Array Expression -> Array Expression
+spacedTo wanted newline before =
+    when { wanted = wanted, has = isBlank (Array.length before - 1) before } is
+        { wanted = True, has = False } ->
+            if Array.length before == 0 then
+                before
+
+            else
+                Array.pushLast
+                    { indent = "", content = Empty { comment = Nothing }, newline = Just newline }
+                    before
+
+        { wanted = False, has = True } ->
+            Array.dropLast 1 before
+
+        _ ->
+            before
 
 
 {-| The comment on the key's own line.
@@ -456,6 +629,41 @@ header belongs to that header's table. It goes above the comment block directly
 over that header too, because that block is the header's by the convention
 above; a comment with a blank line under it stays where it is.
 
+**A value that is already what you are setting it to is left exactly as it is
+written.** This is not thrift, it is the difference between an editor and an
+encoder, and it is the one thing about this module worth reading twice.
+
+Setting a value replaces the whitespace inside it, because the whitespace was
+part of the old value and the new one has none of its own. So a list somebody
+arranged by hand:
+
+    ports = [
+      8000,  # http
+      8001   # https
+    ]
+
+written back with `set [ "ports" ] (array [ int 8000, int 8001 ])` would come
+out as `ports = [8000, 8001]`. That is right for a list that *changed* -- there
+is no old formatting to keep for a new value -- and it is destructive for one
+that did not.
+
+Which is the case that actually happens. A program that writes its whole
+configuration out on every save touches every key, so the key the user
+hand-arranged gets flattened by a save about some *other* key. Comparing first
+is what stops that, and doing it here rather than leaving it to every caller is
+the only way it gets done: the caller would have to hold the old document, take
+it apart, and know that `1.50` and `1.5` are the same number and `0x1F` and
+`31` are the same integer.
+
+The comparison is by value and not by text. A string is its characters after
+escapes, an integer or float is its number whatever base or spelling it was
+written in, a date-time is the instant and the offset, an array is its elements
+in order, and an inline table is its entries in order. So `set` over `0x1F` with
+`int 31` changes nothing and the file keeps saying `0x1F`. To change the
+spelling rather than the value, [`remove`](#remove) the key and set it again --
+which loses the comments with it, and is the honest price of asking for the line
+to be rewritten.
+
 An edit that gives the file a meaning it cannot have -- a key under an inline
 table, say -- is not refused here. See [what this module does not
 check](#what-this-module-does-not-check).
@@ -465,11 +673,140 @@ set : Array String -> Value -> Document -> Document
 set path content document =
     when indexOf path document is
         Just index ->
-            rebuild document
-                (Array.update index (replaceValue content) document.expressions)
+            if Maybe.map (sameValue content) (get path document) == Just True then
+                document
+
+            else
+                rebuild document
+                    (Array.update index (replaceValue content) document.expressions)
 
         Nothing ->
             insert path content document
+
+
+{-| Set a value, and explain the key if this is the call that put it there.
+
+    Toml.Edit.introduce [ "theme" ]
+        { blankBefore = True
+        , leading = [ " Which colour scheme to open in." ]
+        , trailing = Nothing
+        }
+        (Toml.Edit.string "dark")
+
+[`set`](#set) and [`setComments`](#setComments) together, except that the
+comments are written **only when the key was not already in the document**.
+
+That condition is the whole reason this exists, and it is a rule about the
+person on the other end of the file rather than about TOML. A program that
+keeps a config file wants every key it invents to arrive with a sentence saying
+what the key is for, because a config file whose fields are undocumented is one
+nobody opens. It does not want to write that sentence again on every save: the
+user who deleted it meant to delete it, and the user who rewrote it in their own
+language has not made a mistake for the next save to correct.
+
+On a document with the key already in it this is exactly `set`, comments and
+all left alone. On [`Toml.empty`](Toml#empty) it writes the key and the
+explanation together, which is how a file that has never existed comes out
+documented.
+
+-}
+introduce : Array String -> Comments -> Value -> Document -> Document
+introduce path note content document =
+    if member path document then
+        set path content document
+
+    else
+        set path content document
+            |> setComments path note
+
+
+{-| Whether two values mean the same thing, whatever they were written as.
+
+Formatting is not part of the answer, which is the point: this is what lets
+[`set`](#set) leave a value alone that is already what it is being set to, and
+formatting is precisely what would be lost if it did not. So `0x1F` equals `31`,
+`1.50` equals `1.5`, `'a'` equals `"a"`, and an array equals one with the same
+elements however the brackets were spaced.
+
+Order counts inside an array, which is a fact about TOML, and inside an inline
+table, which is not -- `{ a = 1, b = 2 }` and `{ b = 2, a = 1 }` mean the same
+table and are not equal here. The looser answer would be the correct one and it
+is not the useful one: a program that reorders an inline table wrote the entries
+in the order it wants them, and this function exists to decide whether to leave
+the file alone, not to settle what TOML means.
+
+-}
+sameValue : Value -> Value -> Bool
+sameValue left right =
+    when { left = left, right = right } is
+        { left = Ast.StringVal a, right = Ast.StringVal b } ->
+            a.value == b.value
+
+        { left = Ast.IntegerVal a, right = Ast.IntegerVal b } ->
+            BigInt.compare a.value b.value == EQ
+
+        { left = Ast.FloatVal a, right = Ast.FloatVal b } ->
+            sameFloat a.value b.value
+
+        { left = Ast.BooleanVal a, right = Ast.BooleanVal b } ->
+            a.value == b.value
+
+        { left = Ast.OffsetDateTimeVal a, right = Ast.OffsetDateTimeVal b } ->
+            a.value == b.value
+
+        { left = Ast.LocalDateTimeVal a, right = Ast.LocalDateTimeVal b } ->
+            a.value == b.value
+
+        { left = Ast.LocalDateVal a, right = Ast.LocalDateVal b } ->
+            a.value == b.value
+
+        { left = Ast.LocalTimeVal a, right = Ast.LocalTimeVal b } ->
+            a.value == b.value
+
+        { left = Ast.ArrayVal a, right = Ast.ArrayVal b } ->
+            sameSequence (Array.map .value a.elements) (Array.map .value b.elements)
+
+        { left = Ast.InlineTableVal a, right = Ast.InlineTableVal b } ->
+            (Array.length a.entries == Array.length b.entries)
+                && (Array.map2
+                        (\one other ->
+                            Literal.path one.keyval.key == Literal.path other.keyval.key
+                                && sameValue one.keyval.value other.keyval.value
+                        )
+                        a.entries
+                        b.entries
+                        |> Array.all identity
+                   )
+
+        _ ->
+            False
+
+
+{-| `BigDecimal.compare` for the finite ones, which is what makes `1.50` and
+`1.5` equal. The other two are not numbers and compare as themselves, sign
+included, since `+nan` and `-nan` are different text and TOML says nothing
+about what the difference means.
+-}
+sameFloat : Ast.FloatValue -> Ast.FloatValue -> Bool
+sameFloat left right =
+    when { left = left, right = right } is
+        { left = Ast.Finite a, right = Ast.Finite b } ->
+            BigDecimal.compare a b == EQ
+
+        { left = Ast.Infinite a, right = Ast.Infinite b } ->
+            a == b
+
+        { left = Ast.NotANumber a, right = Ast.NotANumber b } ->
+            a == b
+
+        _ ->
+            False
+
+
+sameSequence : Array Value -> Array Value -> Bool
+sameSequence left right =
+    Array.length left == Array.length right
+        && (Array.map2 sameValue left right |> Array.all identity)
 
 
 {-| Only the value. The key keeps its spelling, the equals sign keeps the

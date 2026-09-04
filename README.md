@@ -32,6 +32,15 @@ the whitespace around it, and the comment on the line stays. A key that is not
 there yet is added at the end of the table it belongs to, indented to match its
 neighbours; if the table is not there either, a `[header]` comes with it.
 
+**A value that is already what you are setting it to is left exactly as it is
+written**, and that is the property that makes "write my whole configuration
+back" safe to do on every save. Setting a value replaces the whitespace inside
+it, so an array somebody arranged over four lines with a note against each
+element would otherwise be flattened onto one -- on the key nobody changed,
+because the program was saving some other key. The comparison is by value and
+not by text: `0x1F` and `31` are the same integer, `1.50` and `1.5` the same
+number, so nothing is rewritten to say what it already said.
+
 The value can be an array or an inline table as well as a scalar — `array` and
 `inlineTable` write them on one line. Replacing the whole inline table is also
 how to change something *inside* one, because a path stops at the brace: an
@@ -68,7 +77,33 @@ have a blank line under it, or deleting that key will take the heading too.
 
 `setComments` writes back what `comments` reads, in the same shape, so the two
 are inverses. Adding a trailing comment to a line that had none puts a space in
-front of it; taking one off takes that whitespace with it.
+front of it; taking one off takes that whitespace with it. `blankBefore` is
+whether an empty line sits above the block, which is here because there is no
+other way to ask for one -- a document is a list of expressions and has no
+lines to insert between.
+
+`introduce` is `set` and `setComments` in one call, except that the comments
+are written **only when the key was not already there**. It is the shape a
+program keeping a config file wants: every key it invents arrives with a
+sentence saying what it is for, and the user who deletes that sentence, or
+rewrites it in their own language, does not get corrected on the next save.
+
+## Writing one that may not exist yet
+
+`Toml.empty` is a document with nothing in it. Every key is missing from it and
+`set` adds a key that is missing, so creating the file and updating it are the
+same code:
+
+```gren
+Toml.parseBytes bytes
+    |> Result.withDefault Toml.empty
+    |> Toml.Edit.introduce [ "theme" ] note (Toml.Edit.string "dark")
+    |> Toml.toBytes
+```
+
+Without it a program needs a second path that writes the file from scratch,
+which is a second place to keep the shape of the file and the first place for
+the two to disagree.
 
 ## Writing one from scratch
 
@@ -91,6 +126,20 @@ name = "widget"
 host = "example.com"
 port = 8080
 ```
+
+`commented` explains a field, since a file nobody can read is not much better
+than no file:
+
+```gren
+Toml.Encode.field "port" (Toml.Encode.int 8080)
+    |> Toml.Encode.commented
+        { leading = [ " What to listen on." ], trailing = Just " http" }
+```
+
+There is no blank-line setting to go with it, unlike in `Toml.Edit`, because a
+file this wrote has no author to have an opinion about its spacing: a commented
+field gets a blank line above it, and not at the top of a file or under a
+`[header]`, where there is nothing above to be held off.
 
 You choose the shape rather than a heuristic choosing it: `table` and
 `tableArray` write `[header]` sections, `inlineTable` and `array` write braces
@@ -183,7 +232,7 @@ reward for being valid.
 ## Tests
 
 ```sh
-devbox run test          # 144 checks, ~0.9s, no network
+devbox run test          # 172 checks, ~0.9s, no network
 devbox run conformance   # the official toml-test runner; needs Go
 ```
 
@@ -209,7 +258,7 @@ RoundTrip: setUpSuite: ENOENT: no such file or directory,
 Semantics: setUpSuite: ...
 Values:    setUpSuite: ...
 
-FAILED — 136 passed, 0 failed, 11 errored
+FAILED — 164 passed, 0 failed, 11 errored
 ```
 
 `0 failed, 11 errored` is the signature: nothing is wrong with the library,

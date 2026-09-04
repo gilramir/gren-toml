@@ -37,7 +37,7 @@ Everything runs inside devbox; `gren` and node 22 are not on `PATH` otherwise.
 ```sh
 devbox run build    # compile the package
 devbox run docs     # check the doc comments parse
-devbox run test     # tests/run.sh: 144 checks, 714 of them corpus files, ~0.9s
+devbox run test     # tests/run.sh: 172 checks, 714 of them corpus files, ~0.9s
 devbox run gen      # regenerate the two generated test fixtures
 
 devbox run conformance   # toml-test/: the official runner. Needs Go and,
@@ -118,6 +118,43 @@ the opening quote of a string. `Toml.chooseError` takes the furthest position
 and, among ties, the highest `Toml.Parse.rank`. **A new `Problem` constructor
 needs a rank**, and the Decoding suite pins the messages for the common
 mistakes.
+
+## `set` compares before it writes
+
+`Toml.Edit.set` leaves a value alone when the document already means what it is
+being set to, and that is load-bearing rather than thrifty: setting a value
+replaces the whitespace *inside* it, so a program that writes its whole
+configuration back on every save would flatten a hand-arranged array on the key
+it was not changing. `sameValue` is the comparison, and it is by meaning and not
+by text -- `0x1F` equals `31`, `1.50` equals `1.5`.
+
+**A new `Ast.Value` constructor needs a branch in `sameValue`**, or two values
+of that type will always compare unequal and `set` will quietly go back to
+rewriting them. The fall-through is `_ -> False`, so nothing complains.
+
+`introduce` is `set` plus `setComments` for a key that was not there. The "was
+not there" is the whole of it: writing the comments unconditionally would
+overwrite whatever the user put in their config file every time the program
+saved.
+
+## Comments come in two shapes, and that is deliberate
+
+`Toml.Edit.Comments` has `blankBefore`; `Toml.Encode.Comments` does not. Editing
+works on somebody's file, so the spacing is theirs to ask for; encoding builds a
+file with no author, so the spacing is the module's, and `Toml.Encode`'s style
+section already says nobody gets to change it. Do not "fix" the asymmetry by
+adding the field to `Encode`.
+
+`Toml.Encode` puts its blank lines in unconditionally and takes the useless ones
+out again in `tidyBlanks`, because neither the header writer nor the comment
+writer can see what is around it. Two of them come out: the one at the top of
+the file, and the one between a `[header]` and the first key of its own table --
+but *not* the one between a header and a nested header, which is why that
+function looks forwards as well as back.
+
+**`Array.get -1` in Gren is the last element.** `separatesAnything` guards
+`index <= 0` for exactly that reason, and the failing test looked like a stray
+blank line at the top of the file rather than like an off-by-one.
 
 ## Toml.Encode's two rules that look cosmetic and are not
 

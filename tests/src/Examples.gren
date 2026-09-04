@@ -524,9 +524,29 @@ examplesSuite =
                         )
                         (edit
                             (Edit.setComments [ "database", "enabled" ]
-                                { leading = [ " Turn this off to go quiet." ]
+                                { blankBefore = False
+                                , leading = [ " Turn this off to go quiet." ]
                                 , trailing = Just " on by default"
                                 }
+                            )
+                        )
+                    )
+            , U.test "Edit: introduce explains the key it invents" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expecting
+                            [ { old = "temp_targets = { cpu = 79.5, case = 72.0 }"
+                              , new = "temp_targets = { cpu = 79.5, case = 72.0 }\n\n# Seconds.\ntimeout = 30"
+                              }
+                            ]
+                        )
+                        (edit
+                            (Edit.introduce [ "database", "timeout" ]
+                                { blankBefore = True
+                                , leading = [ " Seconds." ]
+                                , trailing = Nothing
+                                }
+                                (Edit.int 30)
                             )
                         )
                     )
@@ -554,6 +574,22 @@ examplesSuite =
             , U.test "Encode: the same file, built from nothing" <| \_ ->
                 Task.succeed
                     (Expect.equal (String.join "\n" builtLines) built)
+            , U.test "Encode: commented writes the block and the blank line above it" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (String.join "\n"
+                            [ "a = 1", "", "# What to listen on.", "port = 8080 # http", "" ]
+                        )
+                        (Encode.toString
+                            [ Encode.field "a" (Encode.int 1)
+                            , Encode.field "port" (Encode.int 8080)
+                                |> Encode.commented
+                                    { leading = [ " What to listen on." ]
+                                    , trailing = Just " http"
+                                    }
+                            ]
+                        )
+                    )
             , U.test "Encode: and what it builds parses back to the same values" <| \_ ->
                 Task.succeed
                     (Expect.equal (decoded config) (Decode.fromString config built |> Result.mapError Decode.errorToString))

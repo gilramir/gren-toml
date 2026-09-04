@@ -1,6 +1,7 @@
 module Toml exposing
     ( Document
     , Error
+    , empty
     , errorToString
     , parse
     , parseBytes
@@ -72,7 +73,7 @@ docs:
 
 ## Reading
 
-@docs parse, parseBytes
+@docs parse, parseBytes, empty
 
 
 ## Writing
@@ -104,6 +105,33 @@ in one.
 -}
 type alias Document =
     Ast.Document
+
+
+{-| A document with nothing in it.
+
+This exists for one situation, and it is the situation a program that keeps a
+config file is in every time it saves: **the file may not be there yet.**
+
+    read path
+        |> Task.map (\bytes -> Toml.parseBytes bytes |> Result.withDefault Toml.empty)
+        |> Task.onError (\_ -> Task.succeed Toml.empty)
+        |> Task.map (Toml.Edit.set [ "theme" ] (Toml.Edit.string "dark"))
+
+With it, creating the file and changing one value in it are the same code --
+[`Toml.Edit.set`](Toml-Edit#set) adds a key that is not there, and every key is
+missing from an empty document. Without it a program needs a second path that
+writes the file from scratch, which is a second place to keep the shape of the
+file and the first place for the two to drift apart.
+
+`Toml.toString empty` is `""`, and a value set into it lands on line one with
+no leading blank.
+
+-}
+empty : Document
+empty =
+    { hasBom = False
+    , expressions = [ { indent = "", content = Ast.Empty { comment = Nothing }, newline = Nothing } ]
+    }
 
 
 {-| Read a TOML file from its bytes.

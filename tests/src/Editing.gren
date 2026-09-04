@@ -116,6 +116,23 @@ afterLine anchor added lines =
         lines
 
 
+{-| The fixture without the line that follows `anchor`, which is how a test
+says "the blank line above this block went away" without repeating the file.
+-}
+withoutLineAfter : String -> Array String -> Array String
+withoutLineAfter anchor lines =
+    Array.indexedMap
+        (\index line ->
+            if Array.get (index - 1) lines == Just anchor && index > 0 then
+                Nothing
+
+            else
+                Just line
+        )
+        lines
+        |> Array.mapAndKeepJust identity
+
+
 beforeLine : String -> String -> Array String -> Array String
 beforeLine anchor added lines =
     Array.mapAndFlatten
@@ -340,7 +357,8 @@ editingSuite =
             , U.test "comments says which ones belong to a key" <| \_ ->
                 Task.succeed
                     (Expect.equal
-                        { leading =
+                        { blankBefore = True
+                        , leading =
                             [ " How long to wait before giving up."
                             , " Seconds, not milliseconds."
                             ]
@@ -351,7 +369,7 @@ editingSuite =
             , U.test "and which one is on the line" <| \_ ->
                 Task.succeed
                     (Expect.equal
-                        { leading = [], trailing = Just " what it is called" }
+                        { blankBefore = True, leading = [], trailing = Just " what it is called" }
                         (readComments [ "name" ])
                     )
             , U.test "paths lists every key, headers resolved" <| \_ ->
@@ -448,6 +466,96 @@ editingSuite =
                             )
                         )
                     )
+            -- SETTING WHAT IS ALREADY THERE
+            --
+            -- The property that makes "write the whole configuration back" a
+            -- safe thing for a program to do on every save. Each of these sets
+            -- a value the file already has, spelled differently, and the file
+            -- has to come back byte for byte -- including the spelling, which
+            -- is the part a caller would lose.
+            , U.test "setting a value to what it already is changes nothing" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok source)
+                        (edit (Edit.set [ "retries" ] (Edit.int 3)))
+                    )
+            , U.test "and the file keeps its own spelling of the number" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok source)
+                        (edit (Edit.set [ "server", "port" ] (Edit.int 0x1F)))
+                    )
+            , U.test "an array set to the same elements keeps the lines it was written on" <| \_ ->
+                let
+                    text =
+                        "zones = [\n  \"Asia/Seoul\",     # them\n  \"America/Chicago\" # me\n]\n"
+                in
+                Task.succeed
+                    (Expect.equal (Ok text)
+                        (editing text
+                            (Edit.set [ "zones" ]
+                                (Edit.array
+                                    [ Edit.string "Asia/Seoul", Edit.string "America/Chicago" ]
+                                )
+                            )
+                        )
+                    )
+            , U.test "but reordering it is a change, and is written as one" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok "zones = [\"America/Chicago\", \"Asia/Seoul\"]\n")
+                        (editing "zones = [\n  \"Asia/Seoul\",\n  \"America/Chicago\"\n]\n"
+                            (Edit.set [ "zones" ]
+                                (Edit.array
+                                    [ Edit.string "America/Chicago", Edit.string "Asia/Seoul" ]
+                                )
+                            )
+                        )
+                    )
+            , U.test "1.50 and 1.5 are the same number, so the file keeps 1.50" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok "ratio = 1.50\n")
+                        (editing "ratio = 1.50\n" (Edit.set [ "ratio" ] (Edit.float 1.5)))
+                    )
+            , U.test "and a different number is written" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok "ratio = 1.6\n")
+                        (editing "ratio = 1.50\n" (Edit.set [ "ratio" ] (Edit.float 1.6)))
+                    )
+            , U.test "a literal string and a basic one with the same characters are equal" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok "name = 'widget'\n")
+                        (editing "name = 'widget'\n" (Edit.set [ "name" ] (Edit.string "widget")))
+                    )
+            , U.test "an inline table with its entries in another order is a change" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok "limits = { hard = 4096, soft = 1024 }\n")
+                        (editing "limits = { soft = 1024, hard = 4096 }\n"
+                            (Edit.set [ "limits" ]
+                                (Edit.inlineTable
+                                    [ { key = "hard", value = Edit.int 4096 }
+                                    , { key = "soft", value = Edit.int 1024 }
+                                    ]
+                                )
+                            )
+                        )
+                    )
+            , U.test "a value of another type is a change even when it reads the same" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok "n = \"1\"\n")
+                        (editing "n = 1\n" (Edit.set [ "n" ] (Edit.string "1")))
+                    )
+            -- IS IT THERE
+            , U.test "member says whether a key is in the file" <| \_ ->
+                Task.succeed
+                    (Expect.equal { there = True, absent = False }
+                        (when Toml.parse source is
+                            Ok document ->
+                                { there = Edit.member [ "server", "port" ] document
+                                , absent = Edit.member [ "server", "nope" ] document
+                                }
+
+                            Err _ ->
+                                { there = False, absent = True }
+                        )
+                    )
             -- WRITING COMMENTS
             , U.test "a comment added to a line that had none gets a space in front of it" <| \_ ->
                 Task.succeed
@@ -455,7 +563,7 @@ editingSuite =
                         (expecting (replaceLine "retries = 3" "retries = 3 # why so few"))
                         (edit
                             (Edit.setComments [ "retries" ]
-                                { leading = [], trailing = Just " why so few" }
+                                { blankBefore = False, leading = [], trailing = Just " why so few" }
                             )
                         )
                     )
@@ -470,7 +578,7 @@ editingSuite =
                         )
                         (edit
                             (Edit.setComments [ "name" ]
-                                { leading = [], trailing = Just " renamed" }
+                                { blankBefore = True, leading = [], trailing = Just " renamed" }
                             )
                         )
                     )
@@ -485,7 +593,7 @@ editingSuite =
                         )
                         (edit
                             (Edit.setComments [ "name" ]
-                                { leading = [], trailing = Nothing }
+                                { blankBefore = True, leading = [], trailing = Nothing }
                             )
                         )
                     )
@@ -501,7 +609,10 @@ editingSuite =
                         )
                         (edit
                             (Edit.setComments [ "timeout" ]
-                                { leading = [ " Seconds. Not milliseconds." ], trailing = Nothing }
+                                { blankBefore = True
+                                , leading = [ " Seconds. Not milliseconds." ]
+                                , trailing = Nothing
+                                }
                             )
                         )
                     )
@@ -511,7 +622,10 @@ editingSuite =
                         (expecting (beforeLine "\tport = 0x1F" "\t# The one to listen on."))
                         (edit
                             (Edit.setComments [ "server", "port" ]
-                                { leading = [ " The one to listen on." ], trailing = Nothing }
+                                { blankBefore = False
+                                , leading = [ " The one to listen on." ]
+                                , trailing = Nothing
+                                }
                             )
                         )
                     )
@@ -521,7 +635,10 @@ editingSuite =
                         (expecting (beforeLine "\thost = \"example.com\"" "\t# The host."))
                         (edit
                             (Edit.setComments [ "server", "host" ]
-                                { leading = [ " The host." ], trailing = Nothing }
+                                { blankBefore = False
+                                , leading = [ " The host." ]
+                                , trailing = Nothing
+                                }
                             )
                         )
                     )
@@ -536,6 +653,146 @@ editingSuite =
                                     )
                                     document
                                     (Edit.paths document)
+                            )
+                        )
+                    )
+            -- THE BLANK LINE ABOVE A COMMENT BLOCK
+            , U.test "blankBefore puts an empty line above the block" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expecting (beforeLine "retries = 3" ""))
+                        (edit
+                            (Edit.setComments [ "retries" ]
+                                { blankBefore = True, leading = [], trailing = Nothing }
+                            )
+                        )
+                    )
+            , U.test "and False takes one away" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expecting
+                            (withoutLineAfter "# A config file with opinions about whitespace."
+                                >> withoutLineAfter "retries = 3"
+                            )
+                        )
+                        (edit
+                            (\document ->
+                                Array.foldl
+                                    (\path soFar ->
+                                        Edit.setComments path
+                                            { blankBefore = False
+                                            , leading = (Edit.comments path document).leading
+                                            , trailing = (Edit.comments path document).trailing
+                                            }
+                                            soFar
+                                    )
+                                    document
+                                    (Edit.paths document)
+                            )
+                        )
+                    )
+            , U.test "asking for one at the top of the file does nothing" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok "a = 1\n")
+                        (editing "a = 1\n"
+                            (Edit.setComments [ "a" ]
+                                { blankBefore = True, leading = [], trailing = Nothing }
+                            )
+                        )
+                    )
+            -- INTRODUCE
+            , U.test "introduce explains a key it is the one to invent" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok "a = 1\n\n# Seconds.\ntimeout = 30\n")
+                        (editing "a = 1\n"
+                            (Edit.introduce [ "timeout" ]
+                                { blankBefore = True
+                                , leading = [ " Seconds." ]
+                                , trailing = Nothing
+                                }
+                                (Edit.int 30)
+                            )
+                        )
+                    )
+            , U.test "and says nothing about one that was already there" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok "timeout = 45\n")
+                        (editing "timeout = 30\n"
+                            (Edit.introduce [ "timeout" ]
+                                { blankBefore = True
+                                , leading = [ " Seconds." ]
+                                , trailing = Nothing
+                                }
+                                (Edit.int 45)
+                            )
+                        )
+                    )
+            , U.test "not even when the explanation it would have written is gone" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok "timeout = 30\n")
+                        (editing "timeout = 30\n"
+                            (Edit.introduce [ "timeout" ]
+                                { blankBefore = True
+                                , leading = [ " Seconds." ]
+                                , trailing = Nothing
+                                }
+                                (Edit.int 30)
+                            )
+                        )
+                    )
+            -- THE FILE THAT IS NOT THERE YET
+            , U.test "an empty document writes as nothing at all" <| \_ ->
+                Task.succeed (Expect.equal "" (Toml.toString Toml.empty))
+            , U.test "and creating a file is the same code as changing one" <| \_ ->
+                let
+                    write document =
+                        document
+                            |> Edit.introduce
+                                [ "theme" ]
+                                { blankBefore = True
+                                , leading = [ " Which scheme to open in." ]
+                                , trailing = Nothing
+                                }
+                                (Edit.string "dark")
+                            |> Edit.introduce
+                                [ "zones" ]
+                                { blankBefore = True
+                                , leading = [ " In the order they are shown." ]
+                                , trailing = Nothing
+                                }
+                                (Edit.array [ Edit.string "Asia/Seoul" ])
+                in
+                Task.succeed
+                    (Expect.equal
+                        (Ok
+                            (String.join "\n"
+                                [ "# Which scheme to open in."
+                                , "theme = \"dark\""
+                                , ""
+                                , "# In the order they are shown."
+                                , "zones = [\"Asia/Seoul\"]"
+                                , ""
+                                ]
+                            )
+                        )
+                        (Ok (Toml.toString (write Toml.empty)))
+                    )
+            , U.test "and the second run over that file changes only what moved" <| \_ ->
+                let
+                    once =
+                        Toml.toString
+                            (Edit.introduce [ "theme" ]
+                                { blankBefore = True, leading = [ " Scheme." ], trailing = Nothing }
+                                (Edit.string "dark")
+                                Toml.empty
+                            )
+                in
+                Task.succeed
+                    (Expect.equal (Ok "# Scheme.\ntheme = \"gren\"\n")
+                        (editing once
+                            (Edit.introduce [ "theme" ]
+                                { blankBefore = True, leading = [ " Scheme." ], trailing = Nothing }
+                                (Edit.string "gren")
                             )
                         )
                     )
@@ -648,14 +905,14 @@ editingSuite =
         }
 
 
-readComments : Array String -> { leading : Array String, trailing : Maybe String }
+readComments : Array String -> Edit.Comments
 readComments path =
     when Toml.parse source is
         Ok document ->
             Edit.comments path document
 
         Err _ ->
-            { leading = [], trailing = Nothing }
+            { blankBefore = False, leading = [], trailing = Nothing }
 
 
 rawOf : Ast.Value -> String
