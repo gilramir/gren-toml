@@ -51,9 +51,19 @@ not be made to fetch a Go distribution.
 Format sources after editing them, especially after scripted edits:
 
 ```sh
-gren-format src/ tests/src/
-gren-format --diff src/ tests/src/
+gren-format            # the whole src/ tree; --diff to see it without writing
+gren-format -r tests/src/
 ```
+
+Bare `gren-format` walks `src/` on its own. A **directory argument is not
+recursive** without `-r`, so `gren-format src/` sees `src/Toml.gren` and nothing
+under `src/Toml/` — and says so by printing nothing, which looks like success.
+
+**Never format `tests/src/Literals.gren`.** It holds characters above ASCII
+raw, on purpose; `gren-format` escapes a raw U+FFFF back to `\u{FFFF}`, which is
+the one code point the compiler reads back wrong (gren-lang/compiler#384, below),
+and the Literals suite fails. `-r tests/src/` will do it, so re-run
+`devbox run gen` afterwards — it rewrites the file the way the suite needs.
 
 ## The invariant everything else serves
 
@@ -136,8 +146,11 @@ through a table is not defining it.** `[[fruit.apple.seeds]]` is legal after
 ## Two upstream bugs are worked around here
 
 **gren-lang/compiler#384** — `\u{FFFF}` in a string literal compiles to
-`U+D7FF U+DFFF`, which is not a surrogate pair. `tools/gen-strings.py` therefore
-writes characters above ASCII into the fixture as themselves.
+`U+D7FF U+DFFF`, which is not a surrogate pair: the threshold for splitting a
+code point into surrogates is `>= 0xFFFF` where it should be `> 0xFFFF`, so
+U+FFFF is the only one affected — U+E000, U+FEFF and U+10FFFF all survive.
+`tools/gen-strings.py` therefore writes characters above ASCII into the fixture
+as themselves, which is why `gren-format` must not touch `Literals.gren`.
 
 **gren-lang/core#138** — `chompIf`/`chompWhile` hand the predicate the leading
 surrogate instead of the code point for a character outside the BMP. `Toml.Parse`
@@ -154,10 +167,11 @@ file in `tools/templates/` rendered with jinja2, and the script only walks the
 corpus and hands over rows. Edit the shape of a suite in the template, not in a
 Python string.
 
-Both reproduce their file byte for byte and already emit the escapes
-`gren-format` normalises to, so a diff afterwards means the template and the
-file have drifted. Each writes its row counts into a guard test, so an
-extractor that quietly found nothing cannot produce a passing suite.
+Both reproduce their file byte for byte, so a diff afterwards means the template
+and the file have drifted — with the one exception that `Literals.gren` does
+*not* match what `gren-format` would write, and must not be made to. Each writes
+its row counts into a guard test, so an extractor that quietly found nothing
+cannot produce a passing suite.
 
 `tools/templates/*.gren` are not compilable Gren — they are jinja2 — so keep
 them out of `gren-format` and off any source path.
