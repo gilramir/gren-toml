@@ -1,12 +1,16 @@
 # gren-toml
 
-A TOML 1.1 parser for [Gren](https://gren-lang.org/) that does not lose your
-comments. This lets you edit and re-write the TOML accurately.
+A TOML 1.1 parser for [Gren](https://gren-lang.org/).
+You can use it to read TOML files easily.
 
-Read a config file, change one value, write it back, and the result is the file
-you started with plus that one change. The blank lines are where you left them,
-the comments are attached to the keys they were written for, and the `1.50` you
-wrote is still `1.50` and not `1.5`.
+You can also create TOML files. And, it tracks all positions of tokens,
+strings, etc, within the file, including those of comments.  Your program
+can *update* TOML files and re-write them accurately, without losing the
+author's original comments.  The blank lines are where you left them,
+the comments are attached to the keys they were written for, and the
+`1.50` you wrote is still `1.50` and not `1.5`.
+
+Parse and re-write:
 
 ```gren
 Toml.parseBytes source
@@ -15,17 +19,17 @@ Toml.parseBytes source
 ```
 
 That round trip is exact for every one of the 220 valid files in the
-official test suite. The AST stores the whitespace and the comments as
+official TOML test suite. The AST stores the whitespace and the comments as
 *text* so that it can re-write correctly.
 
-## Three examples, start to finish
+## Three complete examples
 
-Here is `gren-toml` used from a Gren CLI (node platform) program, three times,
-each asking more of the file than the last. Everything below compiles as
-written and was run before it was pasted here. The first reads a single value.
-The second reads the whole file into a type of your own. The third owns the
-file: it creates it on the first run, reads it on every run after, and writes
-it back without disturbing anything the user did to it.
+These are examples of using `gren-toml` in Gren `node` programs, each
+asking more of the TOML file than the last. Everything below compiles
+as written. The first reads a single value.  The second reads the whole
+file into a type of your own. The third owns the file: it creates it on
+the first run, reads it on every run after, and writes it back without
+disturbing anything the user did to it.
 
 ### Reading one value
 
