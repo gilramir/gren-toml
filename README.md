@@ -1,7 +1,7 @@
 # gren-toml
 
 A TOML 1.1 parser for [Gren](https://gren-lang.org/) that does not lose your
-comments.
+comments. This lets you edit and re-write the TOML accurately.
 
 Read a config file, change one value, write it back, and the result is the file
 you started with plus that one change. The blank lines are where you left them,
@@ -14,14 +14,14 @@ Toml.parseBytes source
 --> Ok (the same bytes back)
 ```
 
-That round trip is exact for every one of the 220 valid files in the official
-test suite. It is exact by construction rather than by effort: the AST stores
-the whitespace and the comments as *text*, so there is nowhere for a character
-to go missing.
+That round trip is exact for every one of the 220 valid files in the
+official test suite. The AST stores the whitespace and the comments as
+*text* so that it can re-write correctly.
 
 ## Two programs, start to finish
 
-Both compile as written against `gren-lang/node`, and both were run before they
+Here are two Gren CLI (node platform) programs that show how to sue `gren-toml`.
+Both compile as written and both were run before they
 were pasted here. The first only reads a file. The second owns one: it creates
 the file on the first run, reads it on every run after, and writes it back
 without disturbing anything the user did to it.
@@ -626,7 +626,3 @@ after regenerating means the template and the file have drifted:
 ```sh
 devbox run gen           # both scripts, from the repo root
 ```
-
-## License
-
-ISC.
