@@ -18,17 +18,87 @@ That round trip is exact for every one of the 220 valid files in the
 official test suite. The AST stores the whitespace and the comments as
 *text* so that it can re-write correctly.
 
-## Two programs, start to finish
+## Three examples, start to finish
 
-Here are two Gren CLI (node platform) programs that show how to sue `gren-toml`.
-Both compile as written and both were run before they
-were pasted here. The first only reads a file. The second owns one: it creates
-the file on the first run, reads it on every run after, and writes it back
-without disturbing anything the user did to it.
+Here is `gren-toml` used from a Gren CLI (node platform) program, three times,
+each asking more of the file than the last. Everything below compiles as
+written and was run before it was pasted here. The first reads a single value.
+The second reads the whole file into a type of your own. The third owns the
+file: it creates it on the first run, reads it on every run after, and writes
+it back without disturbing anything the user did to it.
+
+### Reading one value
+
+You know the section and you know the key, and you want the one value. There is
+nothing to define first.
+
+```toml
+# Where the service listens.
+[server]
+host = "0.0.0.0"
+port = 8080
+```
+
+```gren
+import Toml.Decode as Decode
+
+Decode.fromBytes (Decode.at [ "server", "host" ] Decode.string) bytes
+--> Ok "0.0.0.0"
+
+Decode.fromBytes (Decode.at [ "server", "port" ] Decode.int) bytes
+--> Ok 8080
+```
+
+With the file read off the disk around it, that is the whole program:
+
+```gren
+import FileSystem
+import FileSystem.Path exposing (Path)
+import Task exposing (Task)
+
+readHost : FileSystem.Permission -> Path -> Task String String
+readHost fs path =
+    FileSystem.readFile fs path
+        |> Task.mapError FileSystem.errorToString
+        |> Task.andThen
+            (\bytes ->
+                when Decode.fromBytes (Decode.at [ "server", "host" ] Decode.string) bytes is
+                    Ok host ->
+                        Task.succeed host
+
+                    Err problem ->
+                        Task.fail (Decode.errorToString problem)
+            )
+```
+
+- **`at` says where, the decoder says what.** `[ "server", "host" ]` is a path
+  through the tables, and it finds the value whether the file wrote a
+  `[server]` header or `server.host = "0.0.0.0"` on one line. For a key at the
+  top level of the file, `Decode.field "name"` is the same thing with one step.
+- **The decoder is the type you expect**: `string`, `bool`, `int`, `float`,
+  `bigInt`, `bigDecimal`, and one for each of TOML's four date and time shapes.
+  Nothing has to be checked afterwards -- a value of the wrong type is an `Err`
+  here.
+- **`fromBytes` does all of it in one call**: parse, check what the document
+  means, walk the path, read the value. There is no document to hold on to.
+- **The error names the path**, so it is worth printing as it comes:
+
+  ```
+  at server.host: expected an integer, found a string
+  at server.nope: no such key
+  ```
+
+- **`bigInt` for a number that may not fit.** TOML integers have no width, so
+  `int` refuses a number too large for a Gren `Int` rather than truncating it,
+  and the error says what to reach for: `9223372036854775807 does not fit in an
+  Int; use bigInt to read it exactly`.
+- **More than a value or two and this stops paying.** Each one is another parse
+  of the file, and nothing anywhere says what the configuration as a whole is.
+  That is the next example.
 
 ### Reading a config file into your own type
 
-The file:
+The same file, with a second section in it:
 
 ```toml
 # Where the service listens.
