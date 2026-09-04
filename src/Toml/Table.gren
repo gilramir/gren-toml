@@ -1,7 +1,8 @@
 module Toml.Table exposing
     ( Table, Value(..)
     , fromDocument
-    , get, entries, keys
+    , get, entries, keys, values
+    , member, count, isEmpty
     , Error, errorToString
     )
 
@@ -37,6 +38,100 @@ came to exist**, and what may be done to it afterwards follows from that.
     while `a.b = 1` and `[a]` do not.
   - An inline table is closed to everything the moment its brace shuts.
 
+
+## Reading the example from toml.io
+
+    [owner]
+    name = "Tom Preston-Werner"
+    dob = 1979-05-27T07:32:00-08:00
+
+    [database]
+    enabled = true
+    ports = [ 8000, 8001, 8002 ]
+    data = [ ["delta", "phi"], [3.14] ]
+    temp_targets = { cpu = 79.5, case = 72.0 }
+
+    [servers]
+
+    [servers.alpha]
+    ip = "10.0.0.1"
+    role = "frontend"
+
+    [servers.beta]
+    ip = "10.0.0.2"
+    role = "backend"
+
+Parse it, then lower it:
+
+    root : Result String Table
+    root =
+        Toml.parse source
+            |> Result.mapError Toml.errorToString
+            |> Result.andThen
+                (Toml.Table.fromDocument >> Result.mapError Toml.Table.errorToString)
+
+Three keys, and they come out **sorted** rather than in file order, because this
+is a `Dict` and file order is not part of what the document means. The order the
+author wrote them in is in the AST, where it belongs:
+
+    Result.map Toml.Table.keys root
+    --> Ok [ "database", "owner", "servers" ]
+
+    Result.map Toml.Table.count root
+    --> Ok 3
+
+Every value is one of the `Value` constructors, so reaching in is a `when`:
+
+    Result.map (Toml.Table.get "owner") root
+    --> Ok (Just (TableValue <a table of "dob" and "name">))
+
+    Result.map (Toml.Table.get "servers") root
+    --> Ok (Just (TableValue <a table of "alpha" and "beta">))
+
+and reaching further in is more of them:
+
+    ipOfAlpha : Table -> Maybe String
+    ipOfAlpha root_ =
+        when Toml.Table.get "servers" root_ is
+            Just (TableValue servers) ->
+                when Toml.Table.get "alpha" servers is
+                    Just (TableValue alpha) ->
+                        when Toml.Table.get "ip" alpha is
+                            Just (StringValue found) ->
+                                Just found
+
+                            _ ->
+                                Nothing
+
+                    _ ->
+                        Nothing
+
+            _ ->
+                Nothing
+
+Which is four levels of `when` to read one string, and is exactly why
+[`Toml.Decode`](Toml-Decode) exists. `Toml.Decode.at [ "servers", "alpha", "ip" ]
+Toml.Decode.string` is the same walk, written once and reported on properly when
+it fails. Use this module directly when the shape of the file is not known ahead
+of time -- when the keys *are* the data -- and the decoder otherwise.
+
+Two things in that file are worth noticing here, because they are this module's
+business and nobody else's, and both of them are a line away from being an
+error. `[servers]` is an empty header followed by `[servers.alpha]`, so `servers`
+is defined explicitly and then added to, which is allowed -- but a *second*
+`[servers]` is not:
+
+    --> Err "the table is defined twice: servers"
+
+And `temp_targets` is an inline table, which becomes an ordinary `TableValue`.
+A closed one, though: adding `temp_targets.gpu = 60` under `[database]` is
+refused, where the same line for a table a header had written would be fine.
+
+    --> Err "this table is already complete and cannot be added to: temp_targets"
+
+Neither file has anything wrong with its *syntax*. `Toml.parse` accepts both,
+which is the division this package is built on -- see the two layers above.
+
 @docs Table, Value
 
 
@@ -47,7 +142,8 @@ came to exist**, and what may be done to it afterwards follows from that.
 
 ## Reading
 
-@docs get, entries, keys
+@docs get, entries, keys, values
+@docs member, count, isEmpty
 
 
 ## Errors
@@ -180,6 +276,40 @@ entries (Table table) =
 keys : Table -> Array String
 keys (Table table) =
     Dict.keys table.fields
+
+
+{-| Every value, in the order [`keys`](#keys) gives their keys.
+-}
+values : Table -> Array Value
+values (Table table) =
+    Dict.values table.fields
+
+
+{-| Whether there is a key of this name.
+
+Not the same question as `get name found /= Nothing` looks like it is, in the
+sense that this one does not build the value to answer it.
+
+-}
+member : String -> Table -> Bool
+member name (Table table) =
+    Dict.member name table.fields
+
+
+{-| How many keys the table has. Its own keys only: a sub-table counts once,
+whatever is inside it.
+-}
+count : Table -> Int
+count (Table table) =
+    Dict.count table.fields
+
+
+{-| Whether the table has no keys at all. True of `[a]` with nothing under it,
+which is a table that exists and is empty.
+-}
+isEmpty : Table -> Bool
+isEmpty (Table table) =
+    Dict.isEmpty table.fields
 
 
 

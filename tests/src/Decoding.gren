@@ -22,7 +22,10 @@ import Result exposing (Result(..))
 import String
 import Task
 import Test.Runner.UnitNode as U
+import Toml
 import Toml.Decode as Decode exposing (Decoder)
+import Toml.Edit as Edit
+import Toml.Table as Table
 
 
 {-| A file with one of everything the decoders below ask for.
@@ -83,6 +86,35 @@ read : Decoder a -> Result String a
 read decoder =
     Decode.fromString decoder sample
         |> Result.mapError Decode.errorToString
+
+
+{-| Parse the sample, do something to the document, then decode it -- without
+writing it out and reading it back, which is the point of `fromDocument`.
+-}
+readDocument : Decoder a -> (Toml.Document -> Toml.Document) -> Result String a
+readDocument decoder change =
+    Toml.parse sample
+        |> Result.mapError Toml.errorToString
+        |> Result.andThen
+            (\document ->
+                Decode.fromDocument decoder (change document)
+                    |> Result.mapError Decode.errorToString
+            )
+
+
+limits : Result String Table.Table
+limits =
+    read (Decode.field "limits" Decode.table)
+
+
+intText : Table.Value -> Maybe String
+intText content =
+    when content is
+        Table.IntegerValue number ->
+            Just (BigInt.toString number)
+
+        _ ->
+            Nothing
 
 
 {-| -}
@@ -261,6 +293,68 @@ decodingSuite =
                                             Decode.at [ "owner", "name" ] Decode.string
                                     )
                             )
+                        )
+                    )
+            -- DECODING A DOCUMENT THAT IS ALREADY PARSED
+            , U.test "fromDocument reads a document without parsing the file twice" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok 8080)
+                        (readDocument (Decode.field "port" Decode.int) identity)
+                    )
+            , U.test "so an edit can be read back before it is written out" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok 9090)
+                        (readDocument (Decode.field "port" Decode.int)
+                            (Edit.set [ "port" ] (Edit.int 9090))
+                        )
+                    )
+            , U.test "and it still rejects what the grammar cannot see" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Err "the key is defined twice: port")
+                        (readDocument (Decode.field "port" Decode.int)
+                            (\document ->
+                                { document
+                                    | expressions =
+                                        Array.prepend document.expressions
+                                            (Toml.parse "\nport = 1"
+                                                |> Result.map .expressions
+                                                |> Result.withDefault []
+                                            )
+                                }
+                            )
+                        )
+                    )
+            -- A TABLE ANSWERS WHAT A DICT WOULD
+            , U.test "count, member and isEmpty, without building the values" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        { count = Ok 2
+                        , has = Ok True
+                        , hasNot = Ok False
+                        , isEmpty = Ok False
+                        }
+                        { count = Result.map Table.count limits
+                        , has = Result.map (Table.member "cpu") limits
+                        , hasNot = Result.map (Table.member "disk") limits
+                        , isEmpty = Result.map Table.isEmpty limits
+                        }
+                    )
+            , U.test "and values comes out beside keys, in the same order" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        { keys = Ok [ "cpu", "memory" ]
+                        , values = Ok [ Just "4", Just "512" ]
+                        }
+                        { keys = Result.map Table.keys limits
+                        , values = Result.map (Table.values >> Array.map intText) limits
+                        }
+                    )
+            , U.test "a header with nothing under it is a table, and it is empty" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok True)
+                        (Decode.fromString (Decode.field "a" Decode.table) "[a]"
+                            |> Result.mapError Decode.errorToString
+                            |> Result.map Table.isEmpty
                         )
                     )
             -- THE FILE ITSELF FAILING

@@ -32,6 +32,18 @@ the whitespace around it, and the comment on the line stays. A key that is not
 there yet is added at the end of the table it belongs to, indented to match its
 neighbours; if the table is not there either, a `[header]` comes with it.
 
+The value can be an array or an inline table as well as a scalar — `array` and
+`inlineTable` write them on one line. Replacing the whole inline table is also
+how to change something *inside* one, because a path stops at the brace: an
+inline table has no lines to insert into, so the boundary is drawn there rather
+than guessed at.
+
+`rename` gives a key a new name and touches nothing else on the line, quoting
+the name if the grammar will not take it bare. `renameTable` does the same for a
+table, taking every header nested under it and every dotted key that spells the
+name out — and leaving the last part of a dotted key alone, since that one names
+the value rather than a table.
+
 `remove` takes a key out along with the comments that belong to it. Which ones
 those are is a convention, since TOML does not say, and it is this one:
 
@@ -44,6 +56,10 @@ those are is a convention, since TOML does not say, and it is this one:
 The blank line is the escape hatch, and it is worth knowing about: a comment
 block that introduces a whole section rather than the one key beneath it should
 have a blank line under it, or deleting that key will take the heading too.
+
+`setComments` writes back what `comments` reads, in the same shape, so the two
+are inverses. Adding a trailing comment to a line that had none puts a space in
+front of it; taking one off takes that whitespace with it.
 
 ## Writing one from scratch
 
@@ -84,6 +100,12 @@ arrays of tables assembled, in a `Dict`. It remembers nothing about
 formatting, because none of that is part of what a TOML document means. This is
 what a program that only wants to read its configuration should use.
 
+It goes one way. A file is written from the AST, never from the table, because
+the table is precisely what has forgotten how the file was written.
+`Toml.Decode.fromDocument` reads a document you are already holding — one you
+parsed in order to edit it — so that a program editing a file and a program
+reading it need not parse it twice.
+
 The second is built from the first, and building it is where a document gets
 rejected for the things a grammar cannot see -- `[a]` written twice, a key
 defined twice, a dotted key reaching into a table a header already defined.
@@ -107,7 +129,11 @@ out. Every scalar carries its source text next to its meaning.
 ```gren
 Toml.parseBytes : Bytes -> Result Error Document   -- this one
 Toml.parse      : String -> Result Error Document  -- for when you already have text
+Toml.toBytes    : Document -> Bytes
+Toml.toString   : Document -> String
 ```
+
+`toBytes` is the way back, and the byte order mark rides along with it.
 
 `parseBytes` is the real entry point, because two of the things that make a TOML
 file invalid are decided before there is a `String` to look at. `Bytes.toString`
@@ -148,7 +174,7 @@ reward for being valid.
 ## Tests
 
 ```sh
-devbox run test          # 71 checks, ~0.8s, no network
+devbox run test          # 127 checks, ~0.9s, no network
 devbox run conformance   # the official toml-test runner; needs Go
 ```
 
@@ -165,7 +191,7 @@ git clone --recurse-submodules <this repo>
 ```
 
 **If you already cloned without `--recurse-submodules`**, `vendor/toml-test` is
-an empty directory and three of the eight suites cannot start:
+an empty directory and three of the nine suites cannot start:
 
 ```
 === SUITE ERRORS ===
@@ -174,7 +200,7 @@ RoundTrip: setUpSuite: ENOENT: no such file or directory,
 Semantics: setUpSuite: ...
 Values:    setUpSuite: ...
 
-FAILED — 63 passed, 0 failed, 11 errored
+FAILED — 88 passed, 0 failed, 11 errored
 ```
 
 `0 failed, 11 errored` is the signature: nothing is wrong with the library,
@@ -188,7 +214,7 @@ git submodule update --init
 
 `devbox run test` runs `tests/`, which reads the corpus off the disk rather than
 from a baked-in fixture, so it follows the submodule rather than a snapshot of
-it. Eight suites, in ~0.8s and with no network:
+it. Nine suites, in ~0.9s and with no network:
 
 | suite | asks |
 |---|---|
@@ -197,6 +223,7 @@ it. Eight suites, in ~0.8s and with no network:
 | `Values` | does each one read as the values `toml-test`'s own JSON says? |
 | `Numbers`, `Literals` | every number and string literal in the suite, in isolation |
 | `Decoding`, `Editing`, `Encoding` | the three APIs, hand-written |
+| `Examples` | the examples in the doc comments, against the file from toml.io |
 
 The first three are the ones that need the submodule.
 

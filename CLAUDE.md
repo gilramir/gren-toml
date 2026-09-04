@@ -18,7 +18,9 @@ Modules, outermost first:
 - `Toml.Edit` — changing a file in place, on the AST.
 - `Toml.Encode` — building a file from nothing.
 - `Toml.Literal` — spelling a value that has no source text yet. Shared by the
-  two above so they cannot disagree about how to write a float.
+  two above so they cannot disagree about how to write a float, an array or an
+  inline table. `Toml.Encode`'s `brackets` and `braces` are thin wrappers over
+  it; put a new spelling here, never in one of the callers.
 - `Toml.Parse` — the grammar, hand-written against `String.Parser.Advanced`.
 - `Toml.Write` — the AST back to text. Not exposed.
 - `Toml.Number`, `Toml.Strings` — reading a literal into its value. Not exposed.
@@ -35,7 +37,7 @@ Everything runs inside devbox; `gren` and node 22 are not on `PATH` otherwise.
 ```sh
 devbox run build    # compile the package
 devbox run docs     # check the doc comments parse
-devbox run test     # tests/run.sh: 71 checks, 714 of them corpus files, ~0.8s
+devbox run test     # tests/run.sh: 127 checks, 714 of them corpus files, ~0.9s
 devbox run gen      # regenerate the two generated test fixtures
 
 devbox run conformance   # toml-test/: the official runner. Needs Go and,
@@ -77,6 +79,13 @@ place that restores them, and every edit goes through it:
 2. Whether the *last* expression has one is what says if the file ends with a
    newline. An edit that removes the final line, or appends past it, changes
    that without meaning to.
+
+The second one has a trap in it. A file that ends with a newline parses to a
+final expression that is empty, has no comment and has no newline of its own --
+`Toml.Edit.isTerminator` recognises it. Appending *after* that expression makes
+it interior, `rebuild` then gives it a newline, and the file quietly stops
+ending with one. `append` goes through `beforeTerminator` for exactly this, and
+`Editing` has the two cases side by side.
 
 Both were caught by the editing suite comparing whole files rather than the
 value that changed. Keep it that way: "the edit was wrong" is not the failure

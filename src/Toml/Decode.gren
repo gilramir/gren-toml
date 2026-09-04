@@ -1,6 +1,6 @@
 module Toml.Decode exposing
     ( Decoder, Error(..)
-    , fromBytes, fromString, fromTable
+    , fromBytes, fromString, fromDocument, fromTable
     , errorToString
     , string, bool, int, float, bigInt, bigDecimal
     , offsetDateTime, localDateTime, localDate, localTime
@@ -34,6 +34,105 @@ than read it wants [`Toml.Ast`](Toml-Ast) instead -- decoding, by design, throws
 away everything an edit needs.
 
 
+## A real example
+
+The file from <https://toml.io>:
+
+    [owner]
+    name = "Tom Preston-Werner"
+    dob = 1979-05-27T07:32:00-08:00
+
+    [database]
+    enabled = true
+    ports = [ 8000, 8001, 8002 ]
+    data = [ ["delta", "phi"], [3.14] ]
+    temp_targets = { cpu = 79.5, case = 72.0 }
+
+    [servers]
+
+    [servers.alpha]
+    ip = "10.0.0.1"
+    role = "frontend"
+
+    [servers.beta]
+    ip = "10.0.0.2"
+    role = "backend"
+
+One value at a time, to show what each decoder does:
+
+    Decode.fromString (Decode.at [ "owner", "name" ] Decode.string) source
+    --> Ok "Tom Preston-Werner"
+
+    Decode.fromString (Decode.at [ "owner", "dob" ] Decode.offsetDateTime) source
+    --> Ok <1979-05-27T07:32:00-08:00, offset kept as -08:00>
+
+    Decode.fromString (Decode.at [ "database", "ports" ] (Decode.array Decode.int)) source
+    --> Ok [ 8000, 8001, 8002 ]
+
+`temp_targets` and `servers` are both tables whose *keys are data* -- one is an
+inline table and the other is three headers, and neither difference reaches this
+layer. [`dict`](#dict) is the decoder for both:
+
+    Decode.fromString (Decode.at [ "database", "temp_targets" ] (Decode.dict Decode.float)) source
+    --> Ok (Dict.fromArray [ { key = "case", value = 72 }, { key = "cpu", value = 79.5 } ])
+
+    Decode.fromString (Decode.field "servers" (Decode.dict (Decode.field "ip" Decode.string))) source
+    --> Ok (Dict.fromArray [ { key = "alpha", value = "10.0.0.1" }, { key = "beta", value = "10.0.0.2" } ])
+
+And the whole thing at once, which is how a program would really read it:
+
+    type alias Config =
+        { owner : String
+        , ports : Array Int
+        , servers : Dict String Server
+        }
+
+    type alias Server =
+        { ip : String, role : String }
+
+    server : Decoder Server
+    server =
+        Decode.map2 (\ip role -> { ip = ip, role = role })
+            (Decode.field "ip" Decode.string)
+            (Decode.field "role" Decode.string)
+
+    config : Decoder Config
+    config =
+        Decode.map3 (\owner ports servers -> { owner = owner, ports = ports, servers = servers })
+            (Decode.at [ "owner", "name" ] Decode.string)
+            (Decode.at [ "database", "ports" ] (Decode.array Decode.int))
+            (Decode.field "servers" (Decode.dict server))
+
+`data = [ ["delta", "phi"], [3.14] ]` is the awkward one, and deliberately so:
+TOML 1.1 lets an array hold values of different types, and Gren does not. There
+is no `Array a` to decode that into, so something has to say what the two arms
+have in common. [`oneOf`](#oneOf) is where that is said:
+
+    Decode.fromString
+        (Decode.at [ "database", "data" ]
+            (Decode.array
+                (Decode.oneOf
+                    [ Decode.array Decode.string
+                    , Decode.map (Array.map String.fromFloat) (Decode.array Decode.float)
+                    ]
+                )
+            )
+        )
+        source
+    --> Ok [ [ "delta", "phi" ], [ "3.14" ] ]
+
+When it goes wrong, the error says where. The path is the one you asked for, not
+the one the file happens to use:
+
+    Decode.fromString (Decode.at [ "owner", "email" ] Decode.string) source
+        |> Result.mapError Decode.errorToString
+    --> Err "at owner.email: no such key"
+
+    Decode.fromString (Decode.at [ "database", "enabled" ] Decode.int) source
+        |> Result.mapError Decode.errorToString
+    --> Err "at database.enabled: expected an integer, found a boolean"
+
+
 ## `int` is the one to read the docs for
 
 TOML integers have no width here: they are `BigInt`s, because a `BigInt` can
@@ -47,7 +146,7 @@ value, ask for [`bigInt`](#bigInt).
 
 ## Running a decoder
 
-@docs fromBytes, fromString, fromTable, errorToString
+@docs fromBytes, fromString, fromDocument, fromTable, errorToString
 
 
 ## Primitives
@@ -189,7 +288,7 @@ fromBytes : Decoder a -> Bytes -> Result Error a
 fromBytes decoder source =
     Toml.parseBytes source
         |> Result.mapError Syntax
-        |> Result.andThen (lower decoder)
+        |> Result.andThen (fromDocument decoder)
 
 
 {-| The same for text you already have. It cannot detect an encoding error --
@@ -199,11 +298,20 @@ fromString : Decoder a -> String -> Result Error a
 fromString decoder source =
     Toml.parse source
         |> Result.mapError Syntax
-        |> Result.andThen (lower decoder)
+        |> Result.andThen (fromDocument decoder)
 
 
-lower : Decoder a -> Toml.Document -> Result Error a
-lower decoder document =
+{-| Decode a document that has already been parsed.
+
+For a caller who is holding one because they are also *editing* it -- see
+[`Toml.Edit`](Toml-Edit) -- and would rather not parse the file twice. The
+document is lowered to a table on the way, which is where a file is rejected for
+the things a grammar cannot see, so this can fail with a `Semantics` error that
+[`fromTable`](#fromTable) never can.
+
+-}
+fromDocument : Decoder a -> Toml.Document -> Result Error a
+fromDocument decoder document =
     Table.fromDocument document
         |> Result.mapError Semantics
         |> Result.andThen (fromTable decoder)

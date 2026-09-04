@@ -19,6 +19,7 @@ final newline.
 
 import Array exposing (Array)
 import Basics exposing (..)
+import Bytes
 import Expect
 import Maybe exposing (Maybe(..))
 import Result exposing (Result(..))
@@ -113,6 +114,29 @@ afterLine anchor added lines =
         lines
 
 
+beforeLine : String -> String -> Array String -> Array String
+beforeLine anchor added lines =
+    Array.mapAndFlatten
+        (\line ->
+            if line == anchor then
+                [ added, line ]
+
+            else
+                [ line ]
+        )
+        lines
+
+
+{-| The same read-change-write as `edit`, for the few tests whose point needs a
+file the fixture above does not have -- a dotted key, mostly.
+-}
+editing : String -> (Toml.Document -> Toml.Document) -> Result String String
+editing text change =
+    Toml.parse text
+        |> Result.mapError Toml.errorToString
+        |> Result.map (change >> Toml.toString)
+
+
 {-| -}
 editingSuite : U.Suite
 editingSuite =
@@ -183,8 +207,23 @@ editingSuite =
             , U.test "a key for a table that does not exist brings a header with it" <| \_ ->
                 Task.succeed
                     (Expect.equal
-                        (Ok (source ++ "\n[metrics]\nenabled = true"))
+                        (Ok (source ++ "\n\n[metrics]\nenabled = true"))
                         (edit (Edit.set [ "metrics", "enabled" ] (Edit.bool True)))
+                    )
+            , U.test "appending to a file that ends with a newline leaves it ending with one" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok "a = 1\n\n[b]\nc = 2\n")
+                        (editing "a = 1\n" (Edit.set [ "b", "c" ] (Edit.int 2)))
+                    )
+            , U.test "and one that does not, still not" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok "a = 1\n\n[b]\nc = 2")
+                        (editing "a = 1" (Edit.set [ "b", "c" ] (Edit.int 2)))
+                    )
+            , U.test "a section appended to an empty file gets no blank line above it" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok "[b]\nc = 2\n")
+                        (editing "" (Edit.set [ "b", "c" ] (Edit.int 2)))
                     )
             -- REMOVING A KEY, AND ITS COMMENTS
             , U.test "removing a key takes the comment block above it" <| \_ ->
@@ -294,6 +333,234 @@ editingSuite =
                                 >> Edit.remove [ "logging", "level" ]
                                 >> Edit.set [ "server", "backlog" ] (Edit.int 128)
                             )
+                        )
+                    )
+            -- SETTING A COMPOSITE VALUE
+            , U.test "an array is written on one line, with a space after each comma" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expecting (afterLine "timeout = 30" "ports = [80, 443]"))
+                        (edit (Edit.set [ "ports" ] (Edit.array [ Edit.int 80, Edit.int 443 ])))
+                    )
+            , U.test "an inline table too, indented to match its neighbours" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expecting
+                            (afterLine "\tport = 0x1F"
+                                "\tlimits = { soft = 1024, hard = 4096 }"
+                            )
+                        )
+                        (edit
+                            (Edit.set [ "server", "limits" ]
+                                (Edit.inlineTable
+                                    [ { key = "soft", value = Edit.int 1024 }
+                                    , { key = "hard", value = Edit.int 4096 }
+                                    ]
+                                )
+                            )
+                        )
+                    )
+            , U.test "an empty one of each has no space inside it" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expecting
+                            (afterLine "timeout = 30" "ports = []"
+                                >> afterLine "ports = []" "limits = {}"
+                            )
+                        )
+                        (edit
+                            (Edit.set [ "ports" ] (Edit.array [])
+                                >> Edit.set [ "limits" ] (Edit.inlineTable [])
+                            )
+                        )
+                    )
+            , U.test "and they nest, which is the only way into an inline table" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expecting
+                            (afterLine "timeout = 30"
+                                "peers = [{ name = \"alpha\" }, { name = \"beta\" }]"
+                            )
+                        )
+                        (edit
+                            (Edit.set [ "peers" ]
+                                (Edit.array
+                                    [ Edit.inlineTable [ { key = "name", value = Edit.string "alpha" } ]
+                                    , Edit.inlineTable [ { key = "name", value = Edit.string "beta" } ]
+                                    ]
+                                )
+                            )
+                        )
+                    )
+            -- WRITING COMMENTS
+            , U.test "a comment added to a line that had none gets a space in front of it" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expecting (replaceLine "retries = 3" "retries = 3 # why so few"))
+                        (edit
+                            (Edit.setComments [ "retries" ]
+                                { leading = [], trailing = Just " why so few" }
+                            )
+                        )
+                    )
+            , U.test "and one replacing another keeps the alignment that was there" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expecting
+                            (replaceLine
+                                "name    = \"widget\"        # what it is called"
+                                "name    = \"widget\"        # renamed"
+                            )
+                        )
+                        (edit
+                            (Edit.setComments [ "name" ]
+                                { leading = [], trailing = Just " renamed" }
+                            )
+                        )
+                    )
+            , U.test "taking one off takes the whitespace before it too" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expecting
+                            (replaceLine
+                                "name    = \"widget\"        # what it is called"
+                                "name    = \"widget\""
+                            )
+                        )
+                        (edit
+                            (Edit.setComments [ "name" ]
+                                { leading = [], trailing = Nothing }
+                            )
+                        )
+                    )
+            , U.test "a leading block replaces the one that was above the key" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expecting
+                            (dropLines [ "# Seconds, not milliseconds." ]
+                                >> replaceLine
+                                    "# How long to wait before giving up."
+                                    "# Seconds. Not milliseconds."
+                            )
+                        )
+                        (edit
+                            (Edit.setComments [ "timeout" ]
+                                { leading = [ " Seconds. Not milliseconds." ], trailing = Nothing }
+                            )
+                        )
+                    )
+            , U.test "and a new block is indented to match the key it explains" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expecting (beforeLine "\tport = 0x1F" "\t# The one to listen on."))
+                        (edit
+                            (Edit.setComments [ "server", "port" ]
+                                { leading = [ " The one to listen on." ], trailing = Nothing }
+                            )
+                        )
+                    )
+            , U.test "the floating block above [server] is not the key's to replace" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expecting (beforeLine "\thost = \"example.com\"" "\t# The host."))
+                        (edit
+                            (Edit.setComments [ "server", "host" ]
+                                { leading = [ " The host." ], trailing = Nothing }
+                            )
+                        )
+                    )
+            , U.test "reading the comments and writing them back changes nothing" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok source)
+                        (edit
+                            (\document ->
+                                Array.foldl
+                                    (\path soFar ->
+                                        Edit.setComments path (Edit.comments path document) soFar
+                                    )
+                                    document
+                                    (Edit.paths document)
+                            )
+                        )
+                    )
+            -- RENAMING
+            , U.test "renaming a key changes the name and nothing else on the line" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expecting (replaceLine "\tport = 0x1F" "\tlisten = 0x1F"))
+                        (edit (Edit.rename [ "server", "port" ] "listen"))
+                    )
+            , U.test "a name the grammar will not take bare is quoted" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expecting (replaceLine "retries = 3" "\"max retries\" = 3"))
+                        (edit (Edit.rename [ "retries" ] "max retries"))
+                    )
+            , U.test "renaming a key that is not there changes nothing" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok source) (edit (Edit.rename [ "nope" ] "x")))
+            , U.test "renaming a table takes its headers and the ones nested under it" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expecting
+                            (replaceLine "[server]" "[listener]"
+                                >> replaceLine "[server.tls]" "[listener.tls]"
+                            )
+                        )
+                        (edit (Edit.renameTable [ "server" ] "listener"))
+                    )
+            , U.test "and a comment that talks about [server] is still a comment" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok True)
+                        (edit (Edit.renameTable [ "server" ] "listener")
+                            |> Result.map
+                                (String.contains
+                                    "must survive anything done to [server]"
+                                )
+                        )
+                    )
+            , U.test "only the last part of the path is the new name" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expecting (replaceLine "[server.tls]" "[server.secure]"))
+                        (edit (Edit.renameTable [ "server", "tls" ] "secure"))
+                    )
+            , U.test "renameTable will not rename a key, since a key is not a table" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok source)
+                        (edit (Edit.renameTable [ "server", "port" ] "listen"))
+                    )
+            , U.test "a table a dotted key wrote is renamed where the key spells it" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok "x.b = 1\nx.c = 2\nb = 3")
+                        (editing "a.b = 1\na.c = 2\nb = 3"
+                            (Edit.renameTable [ "a" ] "x")
+                        )
+                    )
+            , U.test "and the last part of a dotted key is the value, so it is left alone" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok "a.b = 1")
+                        (editing "a.b = 1" (Edit.renameTable [ "a", "b" ] "z"))
+                    )
+            -- THE BYTES BACK
+            , U.test "toBytes is the file the document came from" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok (Just source))
+                        (Toml.parse source
+                            |> Result.mapError Toml.errorToString
+                            |> Result.map (Toml.toBytes >> Bytes.toString)
+                        )
+                    )
+            , U.test "and it carries a byte order mark back, which a String cannot say" <| \_ ->
+                let
+                    original =
+                        Bytes.fromString ("﻿" ++ source)
+                in
+                Task.succeed
+                    (Expect.equal (Ok (Bytes.length original))
+                        (Toml.parseBytes original
+                            |> Result.mapError Toml.errorToString
+                            |> Result.map (Toml.toBytes >> Bytes.length)
                         )
                     )
             -- AND THE RESULT IS STILL A TOML FILE

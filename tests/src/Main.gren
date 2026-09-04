@@ -8,6 +8,8 @@ module Main exposing (main)
     multi-line quote cases that decide where a triple quote ends.
   - `RoundTrip` reads all 934 files off the disk, parses them, and writes them
     back out, which is the property the whole AST is shaped around.
+  - `Examples` runs the examples in the doc comments, so that the results
+    written beside them stay true.
 
 Run with `./run.sh`.
 
@@ -16,6 +18,7 @@ Run with `./run.sh`.
 import Decoding exposing (decodingSuite)
 import Editing exposing (editingSuite)
 import Encoding exposing (encodingSuite)
+import Examples exposing (examplesSuite)
 import FileSystem
 import Init
 import Literals exposing (literalsSuite)
@@ -45,6 +48,7 @@ main =
                 , decodingSuite
                 , editingSuite
                 , encodingSuite
+                , examplesSuite
                 , literalsSuite
                 , roundTripSuite perms
                 , semanticsSuite perms

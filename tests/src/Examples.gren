@@ -1,0 +1,566 @@
+module Examples exposing (examplesSuite)
+
+{-| The examples in the doc comments, run.
+
+Every assertion here appears in a `{-| ... -}` block in `src/`, with the result
+written beside it. A doc example that nothing runs is a doc example that is
+wrong six months from now, and the ones in this package are specific enough --
+whole files, byte for byte -- to go stale the moment anything moves.
+
+They are all against the same file, the example from <https://toml.io>, so that
+a reader who has understood it in one module has understood it in the rest.
+
+@docs examplesSuite
+
+-}
+
+import Array exposing (Array)
+import Basics exposing (..)
+import Civil.DateTime as DateTime
+import Dict
+import Expect
+import Maybe exposing (Maybe(..))
+import Result exposing (Result(..))
+import String
+import Task
+import Test.Runner.UnitNode as U
+import Toml
+import Toml.Ast as Ast
+import Toml.Decode as Decode
+import Toml.Edit as Edit
+import Toml.Encode as Encode
+import Toml.Table as Table
+
+
+{-| <https://toml.io>'s example file, as lines, so that the spaces inside its
+brackets are visible rather than incidental. They matter twice over: the round
+trip has to keep them, and `Toml.Encode` deliberately does not write them.
+-}
+lines : Array String
+lines =
+    [ "[owner]"
+    , "name = \"Tom Preston-Werner\""
+    , "dob = 1979-05-27T07:32:00-08:00"
+    , ""
+    , "[database]"
+    , "enabled = true"
+    , "ports = [ 8000, 8001, 8002 ]"
+    , "data = [ [\"delta\", \"phi\"], [3.14] ]"
+    , "temp_targets = { cpu = 79.5, case = 72.0 }"
+    , ""
+    , "[servers]"
+    , ""
+    , "[servers.alpha]"
+    , "ip = \"10.0.0.1\""
+    , "role = \"frontend\""
+    , ""
+    , "[servers.beta]"
+    , "ip = \"10.0.0.2\""
+    , "role = \"backend\""
+    , ""
+    ]
+
+
+source : String
+source =
+    String.join "\n" lines
+
+
+document : Result String Toml.Document
+document =
+    Toml.parse source
+        |> Result.mapError Toml.errorToString
+
+
+root : Result String Table.Table
+root =
+    document
+        |> Result.andThen
+            (Table.fromDocument >> Result.mapError Table.errorToString)
+
+
+edit : (Toml.Document -> Toml.Document) -> Result String String
+edit change =
+    Result.map (change >> Toml.toString) document
+
+
+{-| The file with some of its lines replaced, for saying what an edit did
+without repeating twenty lines of what it did not do.
+-}
+expecting : Array { old : String, new : String } -> Result String String
+expecting changes =
+    Ok
+        (String.join "\n"
+            (Array.map
+                (\line ->
+                    Array.findFirst (\it -> it.old == line) changes
+                        |> Maybe.map (\found -> found.value.new)
+                        |> Maybe.withDefault line
+                )
+                lines
+            )
+        )
+
+
+decoded : Decode.Decoder a -> Result String a
+decoded decoder =
+    Decode.fromString decoder source
+        |> Result.mapError Decode.errorToString
+
+
+rejected : String -> String
+rejected text =
+    when Toml.parse text is
+        Err reason ->
+            "syntax: " ++ Toml.errorToString reason
+
+        Ok parsed ->
+            when Table.fromDocument parsed is
+                Ok _ ->
+                    "accepted"
+
+                Err reason ->
+                    Table.errorToString reason
+
+
+-- Toml.Encode: the same file built from nothing.
+
+
+built : String
+built =
+    when DateTime.fromString "1979-05-27T07:32:00-08:00" is
+        Nothing ->
+            "the date-time in this test did not parse"
+
+        Just dob ->
+            Encode.toString
+                [ Encode.field "owner"
+                    (Encode.table
+                        [ Encode.field "name" (Encode.string "Tom Preston-Werner")
+                        , Encode.field "dob" (Encode.offsetDateTime dob)
+                        ]
+                    )
+                , Encode.field "database"
+                    (Encode.table
+                        [ Encode.field "enabled" (Encode.bool True)
+                        , Encode.field "ports"
+                            (Encode.array
+                                [ Encode.int 8000, Encode.int 8001, Encode.int 8002 ]
+                            )
+                        , Encode.field "data"
+                            (Encode.array
+                                [ Encode.array
+                                    [ Encode.string "delta", Encode.string "phi" ]
+                                , Encode.array [ Encode.float 3.14 ]
+                                ]
+                            )
+                        , Encode.field "temp_targets"
+                            (Encode.inlineTable
+                                [ Encode.field "cpu" (Encode.float 79.5)
+                                , Encode.field "case" (Encode.float 72.0)
+                                ]
+                            )
+                        ]
+                    )
+                , Encode.field "servers"
+                    (Encode.table
+                        [ Encode.field "alpha"
+                            (Encode.table
+                                [ Encode.field "ip" (Encode.string "10.0.0.1")
+                                , Encode.field "role" (Encode.string "frontend")
+                                ]
+                            )
+                        , Encode.field "beta"
+                            (Encode.table
+                                [ Encode.field "ip" (Encode.string "10.0.0.2")
+                                , Encode.field "role" (Encode.string "backend")
+                                ]
+                            )
+                        ]
+                    )
+                ]
+
+
+{-| What `built` should be: the same file, with the spaces inside the brackets
+gone, because they were the author's and this one has no author.
+-}
+builtLines : Array String
+builtLines =
+    Array.map
+        (\line ->
+            when line is
+                "ports = [ 8000, 8001, 8002 ]" ->
+                    "ports = [8000, 8001, 8002]"
+
+                "data = [ [\"delta\", \"phi\"], [3.14] ]" ->
+                    "data = [[\"delta\", \"phi\"], [3.14]]"
+
+                _ ->
+                    line
+        )
+        lines
+
+
+-- Toml.Decode: the record from the module's real example.
+
+
+type alias Server =
+    { ip : String, role : String }
+
+
+server : Decode.Decoder Server
+server =
+    Decode.map2 (\ip role -> { ip = ip, role = role })
+        (Decode.field "ip" Decode.string)
+        (Decode.field "role" Decode.string)
+
+
+type alias Config =
+    { owner : String
+    , ports : Array Int
+    , servers : Dict.Dict String Server
+    }
+
+
+config : Decode.Decoder Config
+config =
+    Decode.map3
+        (\owner ports servers -> { owner = owner, ports = ports, servers = servers })
+        (Decode.at [ "owner", "name" ] Decode.string)
+        (Decode.at [ "database", "ports" ] (Decode.array Decode.int))
+        (Decode.field "servers" (Decode.dict server))
+
+
+-- Toml.Table: the four-deep walk the module's docs show, to make the point
+-- that Toml.Decode is the same walk written once.
+
+
+ipOfAlpha : Table.Table -> Maybe String
+ipOfAlpha table =
+    when Table.get "servers" table is
+        Just (Table.TableValue servers) ->
+            when Table.get "alpha" servers is
+                Just (Table.TableValue alpha) ->
+                    when Table.get "ip" alpha is
+                        Just (Table.StringValue found) ->
+                            Just found
+
+                        _ ->
+                            Nothing
+
+                _ ->
+                    Nothing
+
+        _ ->
+            Nothing
+
+
+{-| The array literal on the `ports` line, described the way `Toml.Ast`'s docs
+describe it: what sat before each element, and whether a comma followed.
+-}
+portsTrivia : Toml.Document -> Maybe (Array { before : Ast.Trivia, after : Ast.Trivia, comma : Bool })
+portsTrivia doc =
+    when Edit.get [ "database", "ports" ] doc is
+        Just (Ast.ArrayVal literal) ->
+            Just
+                (Array.map
+                    (\it -> { before = it.before, after = it.after, comma = it.comma })
+                    literal.elements
+                )
+
+        _ ->
+            Nothing
+
+
+{-| -}
+examplesSuite : U.Suite
+examplesSuite =
+    U.suite
+        { name = "Examples"
+        , setUpSuite = U.noSuiteFixture
+        , tearDownSuite = U.noTearDown
+        , setUp = \_ -> Task.succeed {}
+        , tearDown = U.noTearDown
+        , tests =
+            -- Toml
+            [ U.test "the file comes back from the round trip" <| \_ ->
+                Task.succeed (Expect.equal (Ok source) (edit identity))
+            , U.test "Toml: the one-liner in the front door's docs" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok "10.0.0.1")
+                        (decoded (Decode.at [ "servers", "alpha", "ip" ] Decode.string))
+                    )
+            -- Toml.Ast
+            , U.test "Ast: the file is twenty expressions" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok 20)
+                        (Result.map (\doc -> Array.length doc.expressions) document)
+                    )
+            , U.test "Ast: dob keeps its offset in the text beside the value" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok (Just "1979-05-27T07:32:00-08:00"))
+                        (Result.map
+                            (\doc ->
+                                when Edit.get [ "owner", "dob" ] doc is
+                                    Just (Ast.OffsetDateTimeVal it) ->
+                                        Just it.raw
+
+                                    _ ->
+                                        Nothing
+                            )
+                            document
+                        )
+                    )
+            , U.test "Ast: every space inside [ 8000, 8001, 8002 ] is in the tree" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (Ok
+                            (Just
+                                [ { before = [ Ast.Spaces " " ], after = [], comma = True }
+                                , { before = [ Ast.Spaces " " ], after = [], comma = True }
+                                , { before = [ Ast.Spaces " " ], after = [ Ast.Spaces " " ], comma = False }
+                                ]
+                            )
+                        )
+                        (Result.map portsTrivia document)
+                    )
+            , U.test "Ast: [servers.alpha] is a header whose key has a rest" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok (Just [ "servers", "alpha" ]))
+                        (Result.map
+                            (\doc ->
+                                Array.get 12 doc.expressions
+                                    |> Maybe.andThen
+                                        (\expression ->
+                                            when expression.content is
+                                                Ast.Header it ->
+                                                    Just (pathOf it.header.key)
+
+                                                _ ->
+                                                    Nothing
+                                        )
+                            )
+                            document
+                        )
+                    )
+            , U.test "Ast: paths resolves the headers away" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (Ok
+                            [ [ "owner", "name" ]
+                            , [ "owner", "dob" ]
+                            , [ "database", "enabled" ]
+                            , [ "database", "ports" ]
+                            , [ "database", "data" ]
+                            , [ "database", "temp_targets" ]
+                            , [ "servers", "alpha", "ip" ]
+                            , [ "servers", "alpha", "role" ]
+                            , [ "servers", "beta", "ip" ]
+                            , [ "servers", "beta", "role" ]
+                            ]
+                        )
+                        (Result.map Edit.paths document)
+                    )
+            -- Toml.Table
+            , U.test "Table: three keys, sorted rather than in file order" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        { keys = Ok [ "database", "owner", "servers" ]
+                        , count = Ok 3
+                        }
+                        { keys = Result.map Table.keys root
+                        , count = Result.map Table.count root
+                        }
+                    )
+            , U.test "Table: the walk down to servers.alpha.ip" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok (Just "10.0.0.1")) (Result.map ipOfAlpha root))
+            , U.test "Table: a second [servers] is refused" <| \_ ->
+                Task.succeed
+                    (Expect.equal "the table is defined twice: servers"
+                        (rejected "[servers]\n[servers.alpha]\nip = \"1\"\n[servers]\n")
+                    )
+            , U.test "Table: and so is a dotted key reaching into an inline table" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        "this table is already complete and cannot be added to: temp_targets"
+                        (rejected "[database]\ntemp_targets = { cpu = 79.5 }\ntemp_targets.gpu = 60\n")
+                    )
+            -- Toml.Decode
+            , U.test "Decode: one value at a time" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        { name = Ok "Tom Preston-Werner"
+                        , ports = Ok [ 8000, 8001, 8002 ]
+                        , enabled = Ok True
+                        }
+                        { name = decoded (Decode.at [ "owner", "name" ] Decode.string)
+                        , ports = decoded (Decode.at [ "database", "ports" ] (Decode.array Decode.int))
+                        , enabled = decoded (Decode.at [ "database", "enabled" ] Decode.bool)
+                        }
+                    )
+            , U.test "Decode: dict reads an inline table and three headers alike" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        { tempKeys = Ok [ "case", "cpu" ]
+                        , tempValues = Ok [ 72.0, 79.5 ]
+                        , serverKeys = Ok [ "alpha", "beta" ]
+                        , ips = Ok [ "10.0.0.1", "10.0.0.2" ]
+                        }
+                        { tempKeys =
+                            decoded (Decode.at [ "database", "temp_targets" ] (Decode.dict Decode.float))
+                                |> Result.map Dict.keys
+                        , tempValues =
+                            decoded (Decode.at [ "database", "temp_targets" ] (Decode.dict Decode.float))
+                                |> Result.map Dict.values
+                        , serverKeys =
+                            decoded (Decode.field "servers" (Decode.dict server))
+                                |> Result.map Dict.keys
+                        , ips =
+                            decoded (Decode.field "servers" (Decode.dict (Decode.field "ip" Decode.string)))
+                                |> Result.map Dict.values
+                        }
+                    )
+            , U.test "Decode: the whole file into a record" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (Ok
+                            { owner = "Tom Preston-Werner"
+                            , ports = [ 8000, 8001, 8002 ]
+                            , servers =
+                                [ { ip = "10.0.0.1", role = "frontend" }
+                                , { ip = "10.0.0.2", role = "backend" }
+                                ]
+                            , names = [ "alpha", "beta" ]
+                            }
+                        )
+                        (decoded config
+                            |> Result.map
+                                (\it ->
+                                    { owner = it.owner
+                                    , ports = it.ports
+                                    , servers = Dict.values it.servers
+                                    , names = Dict.keys it.servers
+                                    }
+                                )
+                        )
+                    )
+            , U.test "Decode: oneOf is what reads an array of mixed types" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok [ [ "delta", "phi" ], [ "3.14" ] ])
+                        (decoded
+                            (Decode.at [ "database", "data" ]
+                                (Decode.array
+                                    (Decode.oneOf
+                                        [ Decode.array Decode.string
+                                        , Decode.map (Array.map String.fromFloat)
+                                            (Decode.array Decode.float)
+                                        ]
+                                    )
+                                )
+                            )
+                        )
+                    )
+            , U.test "Decode: the two error messages, word for word" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        { missing = Err "at owner.email: no such key"
+                        , wrongType = Err "at database.enabled: expected an integer, found a boolean"
+                        }
+                        { missing = decoded (Decode.at [ "owner", "email" ] Decode.string)
+                        , wrongType = decoded (Decode.at [ "database", "enabled" ] Decode.int)
+                        }
+                    )
+            , U.test "Decode: fromDocument reads a document that is already parsed" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok "10.0.0.1")
+                        (document
+                            |> Result.andThen
+                                (\doc ->
+                                    Decode.fromDocument
+                                        (Decode.at [ "servers", "alpha", "ip" ] Decode.string)
+                                        doc
+                                        |> Result.mapError Decode.errorToString
+                                )
+                        )
+                    )
+            -- Toml.Edit
+            , U.test "Edit: setting one value moves nothing else" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expecting [ { old = "ip = \"10.0.0.1\"", new = "ip = \"10.0.0.9\"" } ])
+                        (edit (Edit.set [ "servers", "alpha", "ip" ] (Edit.string "10.0.0.9")))
+                    )
+            , U.test "Edit: a fresh array is spelled by the library, not the file" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expecting
+                            [ { old = "ports = [ 8000, 8001, 8002 ]", new = "ports = [9000, 9001]" } ]
+                        )
+                        (edit
+                            (Edit.set [ "database", "ports" ]
+                                (Edit.array [ Edit.int 9000, Edit.int 9001 ])
+                            )
+                        )
+                    )
+            , U.test "Edit: a new table arrives with its header" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (Ok (source ++ "\n[servers.gamma]\nip = \"10.0.0.3\"\nrole = \"cache\"\n"))
+                        (edit
+                            (Edit.set [ "servers", "gamma", "ip" ] (Edit.string "10.0.0.3")
+                                >> Edit.set [ "servers", "gamma", "role" ] (Edit.string "cache")
+                            )
+                        )
+                    )
+            , U.test "Edit: comments are written where the docs say" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expecting
+                            [ { old = "enabled = true"
+                              , new = "# Turn this off to go quiet.\nenabled = true # on by default"
+                              }
+                            ]
+                        )
+                        (edit
+                            (Edit.setComments [ "database", "enabled" ]
+                                { leading = [ " Turn this off to go quiet." ]
+                                , trailing = Just " on by default"
+                                }
+                            )
+                        )
+                    )
+            , U.test "Edit: renaming a key and a table" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expecting
+                            [ { old = "[database]", new = "[db]" }
+                            , { old = "role = \"frontend\"", new = "job = \"frontend\"" }
+                            ]
+                        )
+                        (edit
+                            (Edit.rename [ "servers", "alpha", "role" ] "job"
+                                >> Edit.renameTable [ "database" ] "db"
+                            )
+                        )
+                    )
+            , U.test "Edit: removing a table takes its blank line with it" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (Ok (String.join "\n" (Array.takeFirst 15 lines) ++ "\n"))
+                        (edit (Edit.removeTable [ "servers", "beta" ]))
+                    )
+            -- Toml.Encode
+            , U.test "Encode: the same file, built from nothing" <| \_ ->
+                Task.succeed
+                    (Expect.equal (String.join "\n" builtLines) built)
+            , U.test "Encode: and what it builds parses back to the same values" <| \_ ->
+                Task.succeed
+                    (Expect.equal (decoded config) (Decode.fromString config built |> Result.mapError Decode.errorToString))
+            ]
+        }
+
+
+pathOf : Ast.Key -> Array String
+pathOf name =
+    Array.prepend [ name.first.value ] (Array.map (\part -> part.key.value) name.rest)

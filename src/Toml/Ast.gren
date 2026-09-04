@@ -49,6 +49,101 @@ comment belongs to is a convention rather than a fact, so it is computed from
 this structure rather than baked into it -- otherwise changing the convention
 would mean changing the parser.
 
+
+## A file, and what it becomes
+
+The example from <https://toml.io>:
+
+    [owner]
+    name = "Tom Preston-Werner"
+    dob = 1979-05-27T07:32:00-08:00
+
+    [database]
+    enabled = true
+    ports = [ 8000, 8001, 8002 ]
+    data = [ ["delta", "phi"], [3.14] ]
+    temp_targets = { cpu = 79.5, case = 72.0 }
+
+    [servers]
+
+    [servers.alpha]
+    ip = "10.0.0.1"
+    role = "frontend"
+
+    [servers.beta]
+    ip = "10.0.0.2"
+    role = "backend"
+
+parses to a `Document` of **twenty** expressions -- one per line, the blank ones
+included, and the twentieth being the empty expression after the final newline
+that says the file ended with one:
+
+    Toml.parse source
+        |> Result.map (\doc -> Array.length doc.expressions)
+    --> Ok 20
+
+Line three is a `Pair`, and it shows the two things this module is shaped
+around. The whitespace is text, and the value carries the spelling it was
+written with next to what it means:
+
+    { indent = ""
+    , content =
+        Pair
+            { keyval =
+                { key = { first = { raw = "dob", value = "dob" }, rest = [] }
+                , wsBeforeEq = " "
+                , wsAfterEq = " "
+                , value =
+                    OffsetDateTimeVal
+                        { raw = "1979-05-27T07:32:00-08:00"
+                        , value = -- a Civil.DateTime
+                        }
+                }
+            , trailing = ""
+            , comment = Nothing
+            }
+    , newline = Just Lf
+    }
+
+`ports = [ 8000, 8001, 8002 ]` is where the trivia earns its place. The author
+put a space inside each bracket and none before the commas, and every one of
+those spaces is in the tree:
+
+    ArrayVal
+        { elements =
+            [ { before = [ Spaces " " ], value = IntegerVal { raw = "8000", .. }, after = [], comma = True }
+            , { before = [ Spaces " " ], value = IntegerVal { raw = "8001", .. }, after = [], comma = True }
+            , { before = [ Spaces " " ], value = IntegerVal { raw = "8002", .. }, after = [ Spaces " " ], comma = False }
+            ]
+        , trailing = []
+        }
+
+`[servers.alpha]` is a `Header` whose key has a `rest`, and the whitespace that
+could have sat around the dot is kept even though there is none here:
+
+    Header
+        { header =
+            { kind = Std
+            , wsBefore = ""
+            , key =
+                { first = { raw = "servers", value = "servers" }
+                , rest = [ { wsBefore = "", wsAfter = "", key = { raw = "alpha", value = "alpha" } } ]
+                }
+            , wsAfter = ""
+            }
+        , trailing = ""
+        , comment = Nothing
+        }
+
+Note what is *not* here: `[servers]` on its own line is one expression and
+`[servers.alpha]` is another, with no link between them. That `alpha` lives
+inside `servers` is a fact about what the file means, not about how it is
+written, so it belongs to [`Toml.Table`](Toml-Table) and is worked out there.
+
+For reaching a value by path rather than by walking this list, see
+[`Toml.Edit.get`](Toml-Edit#get). For what the file *says*, see
+[`Toml.Table`](Toml-Table).
+
 @docs Document, Expression, Content
 
 

@@ -1,8 +1,10 @@
 module Toml.Edit exposing
     ( get, set, remove, removeTable
-    , comments, paths
+    , rename, renameTable
+    , comments, setComments, paths
     , string, int, bigInt, float, bigDecimal, bool
     , offsetDateTime, localDateTime, localDate, localTime
+    , array, inlineTable
     )
 
 {-| Changing a TOML file and leaving the rest of it alone.
@@ -46,12 +48,134 @@ It does not reach inside an inline table or an array. `a = {b = 1}` has the path
 That boundary is where the round trip stops being obvious -- an inline table has
 no lines to insert into -- so it is drawn here rather than guessed at.
 
+
+## A real example
+
+The file from <https://toml.io>. Everything below starts from it, and only the
+lines that change are shown -- every other byte of the file comes back as it was,
+which is the point:
+
+    [owner]
+    name = "Tom Preston-Werner"
+    dob = 1979-05-27T07:32:00-08:00
+
+    [database]
+    enabled = true
+    ports = [ 8000, 8001, 8002 ]
+    data = [ ["delta", "phi"], [3.14] ]
+    temp_targets = { cpu = 79.5, case = 72.0 }
+
+    [servers]
+
+    [servers.alpha]
+    ip = "10.0.0.1"
+    role = "frontend"
+
+    [servers.beta]
+    ip = "10.0.0.2"
+    role = "backend"
+
+**Change one value.** The key, the equals sign and everything around them are
+untouched:
+
+    Toml.Edit.set [ "servers", "alpha", "ip" ] (Toml.Edit.string "10.0.0.9")
+
+    -->  [servers.alpha]
+    -->  ip = "10.0.0.9"
+    -->  role = "frontend"
+
+**Change an array.** A value written fresh is spelled by this module rather than
+by the file, so the author's spaces inside the brackets are not preserved --
+there is nothing left of the old array to preserve them from:
+
+    Toml.Edit.set [ "database", "ports" ]
+        (Toml.Edit.array [ Toml.Edit.int 9000, Toml.Edit.int 9001 ])
+
+    -->  ports = [9000, 9001]
+
+**Add a table.** Neither `[servers.gamma]` nor the keys under it exist, so the
+header comes with the first key and the second lands beside it:
+
+    Toml.Edit.set [ "servers", "gamma", "ip" ] (Toml.Edit.string "10.0.0.3")
+        >> Toml.Edit.set [ "servers", "gamma", "role" ] (Toml.Edit.string "cache")
+
+    -->  [servers.beta]
+    -->  ip = "10.0.0.2"
+    -->  role = "backend"
+    -->
+    -->  [servers.gamma]
+    -->  ip = "10.0.0.3"
+    -->  role = "cache"
+
+**Write comments.**
+
+    Toml.Edit.setComments [ "database", "enabled" ]
+        { leading = [ " Turn this off to go quiet." ], trailing = Just " on by default" }
+
+    -->  [database]
+    -->  # Turn this off to go quiet.
+    -->  enabled = true # on by default
+
+**Rename.** A key by [`rename`](#rename) and a table by
+[`renameTable`](#renameTable), which takes the headers nested under it too:
+
+    Toml.Edit.rename [ "servers", "alpha", "role" ] "job"
+        >> Toml.Edit.renameTable [ "database" ] "db"
+
+    -->  [db]
+    -->  enabled = true
+    -->  ...
+    -->  [servers.alpha]
+    -->  ip = "10.0.0.1"
+    -->  job = "frontend"
+
+**Remove a table**, and its blank line goes with it:
+
+    Toml.Edit.removeTable [ "servers", "beta" ]
+
+    -->  [servers.alpha]
+    -->  ip = "10.0.0.1"
+    -->  role = "frontend"
+    -->  <end of file>
+
+Put together, an edit is a pipeline from `Toml.parseBytes` to `Toml.toString`:
+
+    Toml.parseBytes source
+        |> Result.map
+            (Toml.Edit.set [ "database", "ports" ] (Toml.Edit.array [ Toml.Edit.int 9000 ])
+                >> Toml.Edit.set [ "servers", "gamma", "ip" ] (Toml.Edit.string "10.0.0.3")
+                >> Toml.Edit.renameTable [ "database" ] "db"
+            )
+        |> Result.map Toml.toString
+
+To read the edited file back without writing it out and parsing it again, hand
+the document to [`Toml.Decode.fromDocument`](Toml-Decode#fromDocument).
+
+
+## This is not the module for a new file
+
+There is no `Toml.Edit.empty`, because an empty document has no formatting to
+preserve and this module has nothing to offer it. Building a file from nothing
+is [`Toml.Encode`](Toml-Encode); its
+[`toDocument`](Toml-Encode#toDocument) hands back a `Document`, so a file can be
+built there and then edited here if there is a reason to.
+
 @docs get, set, remove, removeTable
+
+
+## Renaming
+
+@docs rename, renameTable
+
+
+## Comments
+
+@docs comments, setComments
 
 
 ## Looking around
 
-@docs comments, paths
+@docs paths
 
 
 ## Values to put in
@@ -64,6 +188,7 @@ cannot disagree about how to spell a float.
 
 @docs string, int, bigInt, float, bigDecimal, bool
 @docs offsetDateTime, localDateTime, localDate, localTime
+@docs array, inlineTable
 
 -}
 
@@ -178,6 +303,95 @@ ownComment expression =
             Nothing
 
 
+{-| Set the comments that belong to a key, by the same convention
+[`comments`](#comments) reads them by.
+
+    Toml.Edit.setComments [ "timeout" ]
+        { leading = [ " How long to wait." ], trailing = Just " seconds" }
+
+    -->  # How long to wait.
+    -->  timeout = 30 # seconds
+
+The text is what comes *after* the `#`, which is what `comments` hands back, so
+the two are inverses. The leading space is yours to include or leave out:
+`# note` and `#note` are different files and neither is this module's to choose.
+
+`leading = []` takes the block above the key away and `trailing = Nothing` takes
+the comment off the line. Anything separated from the key by a blank line is not
+the key's and is left alone, which is the same blank line that protects it from
+[`remove`](#remove). A key that is not there is left alone too.
+
+-}
+setComments : Array String -> { leading : Array String, trailing : Maybe String } -> Document -> Document
+setComments path wanted document =
+    when indexOf path document is
+        Nothing ->
+            document
+
+        Just index ->
+            let
+                indent =
+                    Array.get index document.expressions
+                        |> Maybe.map .indent
+                        |> Maybe.withDefault ""
+
+                block =
+                    Array.map
+                        (\text ->
+                            { indent = indent
+                            , content = Empty { comment = Just { text = text } }
+                            , newline = Just (styleOf document)
+                            }
+                        )
+                        wanted.leading
+            in
+            rebuild document
+                (Array.prepend
+                    (Array.prepend
+                        (Array.takeFirst (firstOwned index document.expressions) document.expressions)
+                        block
+                    )
+                    (Array.dropFirst index document.expressions
+                        |> Array.update 0 (setTrailingComment wanted.trailing)
+                    )
+                )
+
+
+{-| The comment on the key's own line.
+
+The whitespace before it is the line's and is kept, except that a comment being
+added to a line that had none gets a space put in front of it -- `x = 1# note`
+is legal and nobody writes it -- and a comment being taken off takes that
+whitespace with it, rather than leaving the line ending in spaces.
+
+-}
+setTrailingComment : Maybe String -> Expression -> Expression
+setTrailingComment text expression =
+    when expression.content is
+        Pair fields ->
+            { expression
+                | content =
+                    Pair
+                        { fields
+                            | trailing =
+                                when text is
+                                    Just _ ->
+                                        if fields.trailing == "" then
+                                            " "
+
+                                        else
+                                            fields.trailing
+
+                                    Nothing ->
+                                        ""
+                            , comment = Maybe.map (\it -> { text = it }) text
+                        }
+            }
+
+        _ ->
+            expression
+
+
 
 -- CHANGING
 
@@ -190,7 +404,8 @@ where it was. Nothing else in the file moves.
 
 If there is no such key, one is added. It goes at the end of the table it belongs
 to, after the last key already in it, indented to match. If the table does not
-exist either, a `[header]` for it is appended to the file with the key beneath.
+exist either, a `[header]` for it is appended to the end of the file with the key
+beneath and a blank line above, and a file that ended with a newline still does.
 
 -}
 set : Array String -> Value -> Document -> Document
@@ -243,6 +458,165 @@ remove path document =
         Just index ->
             rebuild document
                 (cut (firstOwned index document.expressions) (index + 1) document.expressions)
+
+
+{-| Give a key a new name and change nothing else.
+
+    Toml.Edit.rename [ "server", "port" ] "listen"
+
+    -->  [server]
+    -->  listen = 8443       # was: port = 8443
+
+The value stays as it was written, the whitespace around the equals sign stays,
+and the comments stay with the line. The new name is spelled bare where the
+grammar allows it and quoted where it does not.
+
+Only the last part of the path is the name: this renames the key `port`, not the
+table `server`. For a table see [`renameTable`](#renameTable).
+
+Whether the new name is already taken is not asked here. It is not a question
+about syntax, so the answer comes from
+[`Toml.Table.fromDocument`](Toml-Table#fromDocument), like every other question
+of its kind -- see the two layers in [`Toml.Table`](Toml-Table).
+
+-}
+rename : Array String -> String -> Document -> Document
+rename path name document =
+    when indexOf path document is
+        Nothing ->
+            document
+
+        Just index ->
+            let
+                at =
+                    Array.length path - Array.length (headerAt index document) - 1
+            in
+            rebuild document
+                (Array.update index (renameKeyPart at name) document.expressions)
+
+
+{-| Give a table a new name: its own `[header]`, every header nested under it,
+and every dotted key that spells the name out itself.
+
+    Toml.Edit.renameTable [ "server" ] "listener"
+
+    -->  [listener]
+    -->  [listener.tls]
+
+Only the last part of the path is the name, as with [`rename`](#rename), so a
+table's ancestors never move and nothing has to be lifted into a different
+section for the result to mean what it says.
+
+A dotted key changes only where the renamed part is a table it passes *through*:
+`renameTable [ "a" ] "x"` turns `a.b = 1` into `x.b = 1` and leaves `b` alone,
+because `b` names the value rather than a table. By the same rule this does
+nothing to a path that names a key: `[ "server", "port" ]` is not a table, and
+[`rename`](#rename) is the one that renames it.
+
+-}
+renameTable : Array String -> String -> Document -> Document
+renameTable path name document =
+    let
+        at =
+            Array.length path - 1
+    in
+    rebuild document
+        (Array.map2
+            (\expression header ->
+                when expression.content is
+                    Header fields ->
+                        if prefixOf path (Literal.path fields.header.key) then
+                            renameHeaderPart at name expression
+
+                        else
+                            expression
+
+                    Pair fields ->
+                        let
+                            own =
+                                Literal.path fields.keyval.key
+
+                            inKey =
+                                at - Array.length header
+
+                            -- Above zero, the renamed part is in the header
+                            -- rather than in the key. At the end of the key it
+                            -- names the value, and a value is not a table.
+                            namesATable =
+                                inKey >= 0 && inKey < Array.length own - 1
+                        in
+                        if namesATable && prefixOf path (Array.prepend header own) then
+                            renameKeyPart inKey name expression
+
+                        else
+                            expression
+
+                    Empty _ ->
+                        expression
+            )
+            document.expressions
+            (headers document.expressions)
+        )
+
+
+{-| The path of the table header in effect at an expression.
+-}
+headerAt : Int -> Document -> Array String
+headerAt index document =
+    Array.get index (headers document.expressions)
+        |> Maybe.withDefault []
+
+
+renameKeyPart : Int -> String -> Expression -> Expression
+renameKeyPart at name expression =
+    when expression.content is
+        Pair fields ->
+            let
+                pair =
+                    fields.keyval
+            in
+            { expression
+                | content =
+                    Pair { fields | keyval = { pair | key = replacePart at name pair.key } }
+            }
+
+        _ ->
+            expression
+
+
+renameHeaderPart : Int -> String -> Expression -> Expression
+renameHeaderPart at name expression =
+    when expression.content is
+        Header fields ->
+            let
+                head =
+                    fields.header
+            in
+            { expression
+                | content =
+                    Header { fields | header = { head | key = replacePart at name head.key } }
+            }
+
+        _ ->
+            expression
+
+
+{-| One part of a key, by its position along the dots. Out of range is left
+alone, which is what makes the callers above able to say "the part at this
+depth" without checking first.
+-}
+replacePart : Int -> String -> Key -> Key
+replacePart at name whole =
+    if at == 0 then
+        { whole | first = Literal.simpleKey name }
+
+    else
+        { whole
+            | rest =
+                Array.update (at - 1)
+                    (\part -> { part | key = Literal.simpleKey name })
+                    whole.rest
+        }
 
 
 {-| Take a whole table out: its `[header]`, everything under it, and the comments
@@ -582,7 +956,9 @@ insertAfter index pair document =
 
 
 {-| No table for this key yet, so the file grows a `[header]` and the key under
-it. Both go at the very end, after everything the file already says.
+it. Both go at the end of what the file already says, with a blank line above
+the header the way [`Toml.Encode`](Toml-Encode) writes one -- unless the file is
+empty, where there is nothing above to be separated from.
 -}
 append : Array String -> Ast.KeyVal -> Document -> Document
 append tablePath pair document =
@@ -590,36 +966,97 @@ append tablePath pair document =
         style =
             styleOf document
 
-        added =
-            if Array.length tablePath == 0 then
-                [ { indent = ""
-                  , content = Pair { keyval = pair, trailing = "", comment = Nothing }
-                  , newline = Just style
-                  }
-                ]
+        keyLine =
+            { indent = ""
+            , content = Pair { keyval = pair, trailing = "", comment = Nothing }
+            , newline = Just style
+            }
+
+        headerLine =
+            { indent = ""
+            , content =
+                Header
+                    { header =
+                        { kind = Std
+                        , wsBefore = ""
+                        , key = Literal.key tablePath
+                        , wsAfter = ""
+                        }
+                    , trailing = ""
+                    , comment = Nothing
+                    }
+            , newline = Just style
+            }
+
+        separator =
+            if saysAnything document.expressions then
+                [ { indent = "", content = Empty { comment = Nothing }, newline = Just style } ]
 
             else
-                [ { indent = ""
-                  , content =
-                        Header
-                            { header =
-                                { kind = Std
-                                , wsBefore = ""
-                                , key = Literal.key tablePath
-                                , wsAfter = ""
-                                }
-                            , trailing = ""
-                            , comment = Nothing
-                            }
-                  , newline = Just style
-                  }
-                , { indent = ""
-                  , content = Pair { keyval = pair, trailing = "", comment = Nothing }
-                  , newline = Just style
-                  }
-                ]
+                []
+
+        added =
+            if Array.length tablePath == 0 then
+                [ keyLine ]
+
+            else
+                Array.prepend separator [ headerLine, keyLine ]
     in
-    rebuild document (Array.prepend document.expressions added)
+    rebuild document (beforeTerminator added document.expressions)
+
+
+{-| Put new expressions at the end of the file, but *before* the empty
+expression that sits after the final newline when there is one.
+
+That expression is how the AST says the file ended with a newline: it holds
+nothing and has no newline of its own, and being last is the whole of its job.
+Appending past it would make it an interior expression, which `rebuild` would
+then give a newline of its own -- and the file, which used to end with one,
+would not any more.
+
+-}
+beforeTerminator : Array Expression -> Array Expression -> Array Expression
+beforeTerminator added expressions =
+    when Array.popLast expressions is
+        Just { last, initial } ->
+            if isTerminator last then
+                Array.pushLast last (Array.prepend initial added)
+
+            else
+                Array.prepend expressions added
+
+        Nothing ->
+            added
+
+
+{-| Whether this is the empty expression a file that ends with a newline ends
+with. A comment with no newline after it is a line of the file and is not one.
+-}
+isTerminator : Expression -> Bool
+isTerminator expression =
+    when expression.content is
+        Empty fields ->
+            fields.comment == Nothing && expression.newline == Nothing
+
+        _ ->
+            False
+
+
+{-| Whether the file has anything in it but blank lines, which is what decides
+if an appended section needs a blank line above it.
+-}
+saysAnything : Array Expression -> Bool
+saysAnything expressions =
+    Array.any
+        (\expression ->
+            when expression.content is
+                Empty fields ->
+                    fields.comment /= Nothing
+
+                _ ->
+                    True
+        )
+        expressions
 
 
 {-| Which line ending this file uses, so that a line added to it matches. The
@@ -707,3 +1144,41 @@ localDate =
 localTime : Time -> Value
 localTime =
     Literal.localTime
+
+
+{-| An array, on one line: `[1, 2, 3]`.
+
+    Toml.Edit.set [ "ports" ]
+        (Toml.Edit.array [ Toml.Edit.int 80, Toml.Edit.int 443 ])
+
+An array already in the file keeps every character of itself for as long as
+nothing is set over it, newlines and comments inside the brackets included.
+This is the spelling for one that is being written fresh.
+
+-}
+array : Array Value -> Value
+array =
+    Literal.array
+
+
+{-| An inline table, on one line: `{ a = 1, b = 2 }`.
+
+    Toml.Edit.set [ "limits" ]
+        (Toml.Edit.inlineTable
+            [ { key = "soft", value = Toml.Edit.int 1024 }
+            , { key = "hard", value = Toml.Edit.int 4096 }
+            ]
+        )
+
+This is also how to change something *inside* an inline table, since a path does
+not reach in -- see [what a path means](#what-a-path-means-here). Build the table
+you want and set the whole of it.
+
+There is no builder here for a `[header]` table, because a header is a line
+rather than a value and `set` puts values on lines. A key under a header that
+does not exist yet already brings one with it.
+
+-}
+inlineTable : Array { key : String, value : Value } -> Value
+inlineTable =
+    Literal.inlineTable

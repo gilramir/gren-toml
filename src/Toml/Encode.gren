@@ -47,11 +47,104 @@ after a `[header]` would land inside that header's table rather than beside it.
 
 ## The style
 
-One space either side of the equals sign, one blank line before each header, no
-indentation, `\\n` line endings, and a final newline. There is no way to change
-any of that, on the grounds that a file this produced has no author to have an
-opinion -- and the moment one does, the file should be read and *edited* rather
-than regenerated, which is what the rest of this package is for.
+One space either side of the equals sign, one blank line before each header
+except the first, no indentation, `\\n` line endings, and a final newline. There
+is no way to change any of that, on the grounds that a file this produced has no
+author to have an opinion -- and the moment one does, the file should be read and
+*edited* rather than regenerated, which is what the rest of this package is for.
+
+
+## A whole file
+
+The example from <https://toml.io>, built from nothing. The nesting of the
+fields is the nesting of the file, and `table` at each level is what asks for a
+`[header]` rather than braces:
+
+    Toml.Encode.toString
+        [ Toml.Encode.field "owner"
+            (Toml.Encode.table
+                [ Toml.Encode.field "name" (Toml.Encode.string "Tom Preston-Werner")
+                , Toml.Encode.field "dob" (Toml.Encode.offsetDateTime dob)
+                ]
+            )
+        , Toml.Encode.field "database"
+            (Toml.Encode.table
+                [ Toml.Encode.field "enabled" (Toml.Encode.bool True)
+                , Toml.Encode.field "ports"
+                    (Toml.Encode.array
+                        [ Toml.Encode.int 8000, Toml.Encode.int 8001, Toml.Encode.int 8002 ]
+                    )
+                , Toml.Encode.field "data"
+                    (Toml.Encode.array
+                        [ Toml.Encode.array
+                            [ Toml.Encode.string "delta", Toml.Encode.string "phi" ]
+                        , Toml.Encode.array [ Toml.Encode.float 3.14 ]
+                        ]
+                    )
+                , Toml.Encode.field "temp_targets"
+                    (Toml.Encode.inlineTable
+                        [ Toml.Encode.field "cpu" (Toml.Encode.float 79.5)
+                        , Toml.Encode.field "case" (Toml.Encode.float 72.0)
+                        ]
+                    )
+                ]
+            )
+        , Toml.Encode.field "servers"
+            (Toml.Encode.table
+                [ Toml.Encode.field "alpha"
+                    (Toml.Encode.table
+                        [ Toml.Encode.field "ip" (Toml.Encode.string "10.0.0.1")
+                        , Toml.Encode.field "role" (Toml.Encode.string "frontend")
+                        ]
+                    )
+                , Toml.Encode.field "beta"
+                    (Toml.Encode.table
+                        [ Toml.Encode.field "ip" (Toml.Encode.string "10.0.0.2")
+                        , Toml.Encode.field "role" (Toml.Encode.string "backend")
+                        ]
+                    )
+                ]
+            )
+        ]
+
+where `dob` is `Civil.DateTime.fromString "1979-05-27T07:32:00-08:00"`, unwrapped
+from its `Maybe`. That writes:
+
+    [owner]
+    name = "Tom Preston-Werner"
+    dob = 1979-05-27T07:32:00-08:00
+
+    [database]
+    enabled = true
+    ports = [8000, 8001, 8002]
+    data = [["delta", "phi"], [3.14]]
+    temp_targets = { cpu = 79.5, case = 72.0 }
+
+    [servers]
+
+    [servers.alpha]
+    ip = "10.0.0.1"
+    role = "frontend"
+
+    [servers.beta]
+    ip = "10.0.0.2"
+    role = "backend"
+
+which is the original file except that the original had a space inside each
+bracket -- `[ 8000, 8001, 8002 ]` -- and this writes none. That difference is the
+whole distinction between this module and [`Toml.Edit`](Toml-Edit). The spaces
+belonged to whoever wrote the file, and a file built from nothing has nobody to
+have written them.
+
+Two things in that example are worth pointing at:
+
+  - `[servers]` comes out on a line of its own with nothing under it, because
+    `servers` has no keys of its own and two sub-tables. That is what the nesting
+    said, and it is a legal and ordinary TOML file.
+  - `temp_targets` uses [`inlineTable`](#inlineTable) rather than
+    [`table`](#table), which is the only reason it comes out in braces. Swap the
+    two and it becomes a `[database.temp_targets]` section instead. Nothing here
+    guesses.
 
 @docs Value, Field, field
 
@@ -130,8 +223,31 @@ and which [`Toml.Edit`](Toml-Edit) can go on changing.
 toDocument : Array Field -> Document
 toDocument fields =
     { hasBom = False
-    , expressions = Array.pushLast endOfFile (section [] fields)
+    , expressions = Array.pushLast endOfFile (withoutLeadingBlank (section [] fields))
     }
+
+
+{-| The blank line before a `[header]` separates it from what came above. At the
+top of the file there is nothing above it, and a file that opens with an empty
+line is not what anyone asked for.
+-}
+withoutLeadingBlank : Array Expression -> Array Expression
+withoutLeadingBlank expressions =
+    when Array.first expressions is
+        Just first ->
+            when first.content is
+                Empty fields ->
+                    if fields.comment == Nothing then
+                        Array.dropFirst 1 expressions
+
+                    else
+                        expressions
+
+                _ ->
+                    expressions
+
+        Nothing ->
+            expressions
 
 
 {-| The fields as text.
@@ -407,51 +523,18 @@ tableArray items =
 {-| `[a, b, c]`, with a space after each comma and none inside the brackets.
 -}
 brackets : Array Ast.Value -> Ast.Value
-brackets items =
-    Ast.ArrayVal
-        { elements =
-            Array.indexedMap
-                (\index item ->
-                    { before = spacing (index > 0)
-                    , value = item
-                    , after = []
-                    , comma = index < Array.length items - 1
-                    }
-                )
-                items
-        , trailing = []
-        }
+brackets =
+    Literal.array
 
 
 {-| `{ a = 1, b = 2 }`, with a space inside each brace. `{}` when empty, since a
 space inside an empty one would be an odd thing to write.
+
+The fields are flattened on the way, since inside a brace there is no header to
+give a table and it has to be written inline whatever it was built with.
+
 -}
 braces : Array Field -> Ast.Value
 braces fields =
-    Ast.InlineTableVal
-        { entries =
-            Array.indexedMap
-                (\index it ->
-                    { before = spacing True
-                    , keyval =
-                        { key = Literal.key [ it.key ]
-                        , wsBeforeEq = " "
-                        , wsAfterEq = " "
-                        , value = flatten it.value
-                        }
-                    , after = []
-                    , comma = index < Array.length fields - 1
-                    }
-                )
-                fields
-        , trailing = spacing (Array.length fields > 0)
-        }
-
-
-spacing : Bool -> Ast.Trivia
-spacing wanted =
-    if wanted then
-        [ Ast.Spaces " " ]
-
-    else
-        []
+    Literal.inlineTable
+        (Array.map (\it -> { key = it.key, value = flatten it.value }) fields)
