@@ -7,3 +7,6 @@ toml-test/gren-toml-decode
 toml-test/gren-toml-encode
 toml-test/.bin/
 *.swp
+
+# python bytecode from tools/
+__pycache__/

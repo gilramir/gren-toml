@@ -1,0 +1,109 @@
+module Literals exposing (literalsSuite)
+
+{-| Every string literal in the official TOML test suite.
+
+{{ good | length }} that must read as a particular string and {{ bad | length }} that must not read at all,
+lifted out of `toml-test`'s string and key directories and filtered to the
+`files-toml-1.1.0` manifest. {{ skipped }} cases were skipped: a literal `Toml.Strings` is
+not being asked about, because it never ends, or because the file is not valid
+UTF-8 and so never reaches this layer at all.
+
+The interesting ones are the multi-line quotes. `"""lol\\""""""` is a string
+containing `lol"""`, and `""""one quote""""` is one containing `"one quote"`,
+because `mlb-quotes` lets a body end with one or two more delimiters than it
+looks like it should. The extractor has its own scanner for where a literal
+ends, written from the grammar rather than from the parser, so the two have to
+agree independently.
+
+@docs literalsSuite
+
+-}
+
+import Array exposing (Array)
+import Basics exposing (..)
+import Expect
+import Maybe exposing (Maybe(..))
+import String
+import Task
+import Test.Runner.UnitNode as U
+import Toml.Strings as Strings
+
+
+type alias Good =
+    { raw : String, want : String, file : String }
+
+
+type alias Bad =
+    { raw : String, file : String }
+
+
+good : Array Good
+good =
+{% for row in good %}
+    {{ "[" if loop.first else "," }} { raw = "{{ row.raw }}", want = "{{ row.want }}", file = "{{ row.file }}" }
+{% endfor %}
+    ]
+
+
+bad : Array Bad
+bad =
+{% for row in bad %}
+    {{ "[" if loop.first else "," }} { raw = "{{ row.raw }}", file = "{{ row.file }}" }
+{% endfor %}
+    ]
+
+
+{-| -}
+literalsSuite : U.Suite
+literalsSuite =
+    U.suite
+        { name = "Literals"
+        , setUpSuite = U.noSuiteFixture
+        , tearDownSuite = U.noTearDown
+        , setUp = \_ -> Task.succeed {}
+        , tearDown = U.noTearDown
+        , tests =
+            -- A generated table that came out empty would pass everything
+            -- below it without checking anything.
+            [ U.test "the tables are the size toml-test says they are" <| \_ ->
+                Task.succeed
+                    (Expect.equal { good = {{ good | length }}, bad = {{ bad | length }} }
+                        { good = Array.length good, bad = Array.length bad }
+                    )
+            , U.test "every literal toml-test accepts reads as the expected string" <| \_ ->
+                Task.succeed
+                    (Expect.equal []
+                        (good
+                            |> Array.keepIf (\row -> Strings.value row.raw /= Just row.want)
+                            |> Array.map
+                                (\row ->
+                                    row.file
+                                        ++ ": "
+                                        ++ row.raw
+                                        ++ " -> "
+                                        ++ describe (Strings.value row.raw)
+                                        ++ ", wanted "
+                                        ++ row.want
+                                )
+                        )
+                    )
+            , U.test "and every one it rejects reads as nothing" <| \_ ->
+                Task.succeed
+                    (Expect.equal []
+                        (bad
+                            |> Array.keepIf (\row -> Strings.value row.raw /= Nothing)
+                            |> Array.map (\row -> row.file ++ ": " ++ row.raw)
+                        )
+                    )
+            ]
+        }
+
+
+describe : Maybe String -> String
+describe result =
+    when result is
+        Just text ->
+            text
+
+        Nothing ->
+            "nothing"

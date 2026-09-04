@@ -12,6 +12,9 @@ with nothing but whitespace or a comment after it. An unterminated string is
 not a literal this module is being asked about, so those are skipped and
 counted.
 
+The file it writes is tools/templates/Literals.gren rendered with the two
+tables; the Gren lives there rather than in a string constant here.
+
 Run from the package root:  python3 tools/gen-strings.py
 """
 
@@ -19,6 +22,10 @@ import json
 import os
 import re
 import sys
+
+from jinja2 import Environment, FileSystemLoader
+
+TEMPLATES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
 
 TESTS = "vendor/toml-test/tests"
 # Valid cases come from both directories; invalid ones only from string/,
@@ -183,113 +190,16 @@ def collect(manifest):
     return good, bad, skipped
 
 
-def table(rows):
-    lines = ["    [ " + rows[0]] + ["    , " + row for row in rows[1:]] + ["    ]"]
-    return "\n".join(lines) + "\n"
-
-
-TEMPLATE = '''module Literals exposing (literalsSuite)
-
-{-| Every string literal in the official TOML test suite.
-
-%d that must read as a particular string and %d that must not read at all,
-lifted out of `toml-test`'s string and key directories and filtered to the
-`files-toml-1.1.0` manifest. %d cases were skipped: a literal `Toml.Strings` is
-not being asked about, because it never ends, or because the file is not valid
-UTF-8 and so never reaches this layer at all.
-
-The interesting ones are the multi-line quotes. `"""lol\\\\""""""` is a string
-containing `lol"""`, and `""""one quote""""` is one containing `"one quote"`,
-because `mlb-quotes` lets a body end with one or two more delimiters than it
-looks like it should. The extractor has its own scanner for where a literal
-ends, written from the grammar rather than from the parser, so the two have to
-agree independently.
-
-@docs literalsSuite
-
--}
-
-import Array exposing (Array)
-import Basics exposing (..)
-import Expect
-import Maybe exposing (Maybe(..))
-import String
-import Task
-import Test.Runner.UnitNode as U
-import Toml.Strings as Strings
-
-
-type alias Good =
-    { raw : String, want : String, file : String }
-
-
-type alias Bad =
-    { raw : String, file : String }
-
-
-good : Array Good
-good =
-%s
-
-bad : Array Bad
-bad =
-%s
-
-{-| -}
-literalsSuite : U.Suite
-literalsSuite =
-    U.suite
-        { name = "Literals"
-        , setUpSuite = U.noSuiteFixture
-        , tearDownSuite = U.noTearDown
-        , setUp = \\_ -> Task.succeed {}
-        , tearDown = U.noTearDown
-        , tests =
-            -- A generated table that came out empty would pass everything
-            -- below it without checking anything.
-            [ U.test "the tables are the size toml-test says they are" <| \\_ ->
-                Task.succeed
-                    (Expect.equal { good = %d, bad = %d }
-                        { good = Array.length good, bad = Array.length bad }
-                    )
-            , U.test "every literal toml-test accepts reads as the expected string" <| \\_ ->
-                Task.succeed
-                    (Expect.equal []
-                        (good
-                            |> Array.keepIf (\\row -> Strings.value row.raw /= Just row.want)
-                            |> Array.map
-                                (\\row ->
-                                    row.file
-                                        ++ ": "
-                                        ++ row.raw
-                                        ++ " -> "
-                                        ++ describe (Strings.value row.raw)
-                                        ++ ", wanted "
-                                        ++ row.want
-                                )
-                        )
-                    )
-            , U.test "and every one it rejects reads as nothing" <| \\_ ->
-                Task.succeed
-                    (Expect.equal []
-                        (bad
-                            |> Array.keepIf (\\row -> Strings.value row.raw /= Nothing)
-                            |> Array.map (\\row -> row.file ++ ": " ++ row.raw)
-                        )
-                    )
-            ]
-        }
-
-
-describe : Maybe String -> String
-describe result =
-    when result is
-        Just text ->
-            text
-
-        Nothing ->
-            "nothing"
-'''
+def render(good, bad, skipped):
+    env = Environment(
+        loader=FileSystemLoader(TEMPLATES),
+        trim_blocks=True,
+        lstrip_blocks=True,
+        keep_trailing_newline=True,
+    )
+    return env.get_template("Literals.gren").render(
+        good=good, bad=bad, skipped=skipped
+    )
 
 
 def main():
@@ -298,16 +208,14 @@ def main():
     if not good or not bad:
         sys.exit("found no cases; is vendor/toml-test checked out?")
 
-    good_rows = ['{ raw = "%s", want = "%s", file = "%s" }'
-                 % (gren_string(raw), gren_string(want), path)
-                 for path, raw, want in good]
-    bad_rows = ['{ raw = "%s", file = "%s" }' % (gren_string(raw), path)
-                for path, raw in bad]
+    good_rows = [
+        {"raw": gren_string(raw), "want": gren_string(want), "file": path}
+        for path, raw, want in good
+    ]
+    bad_rows = [{"raw": gren_string(raw), "file": path} for path, raw in bad]
 
     with open("tests/src/Literals.gren", "w") as out:
-        out.write(TEMPLATE % (len(good), len(bad), skipped,
-                              table(good_rows), table(bad_rows),
-                              len(good), len(bad)))
+        out.write(render(good_rows, bad_rows, skipped))
     print("%d valid, %d invalid, %d skipped" % (len(good), len(bad), skipped))
 
 

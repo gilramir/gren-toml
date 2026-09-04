@@ -2,7 +2,9 @@
   "$schema": "https://raw.githubusercontent.com/jetify-com/devbox/0.18.0/.schema/devbox.schema.json",
   "packages": {
     "nodejs": "22",
-    "gren": "0.6"
+    "gren": "0.6",
+    "python312": "latest",
+    "python312Packages.jinja2": "latest"
   },
   "shell": {
     "scripts": {
@@ -14,6 +16,10 @@
       ],
       "docs": [
         "gren docs --output=/dev/null"
+      ],
+      "gen": [
+        "python3 tools/gen-numbers.py",
+        "python3 tools/gen-strings.py"
       ],
       "conformance": [
         "cd toml-test && devbox run test"

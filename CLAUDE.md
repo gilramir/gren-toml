@@ -36,6 +36,7 @@ Everything runs inside devbox; `gren` and node 22 are not on `PATH` otherwise.
 devbox run build    # compile the package
 devbox run docs     # check the doc comments parse
 devbox run test     # tests/run.sh: 71 checks, 714 of them corpus files, ~0.8s
+devbox run gen      # regenerate the two generated test fixtures
 
 devbox run conformance   # toml-test/: the official runner. Needs Go and,
                          # on first use, a network.
@@ -120,11 +121,19 @@ say whether it was safe to.
 ## Tests
 
 `tests/src/Numbers.gren` and `tests/src/Literals.gren` are **generated** by
-`tools/gen-numbers.py` and `tools/gen-strings.py`. Re-run the script from the
-package root; both reproduce their file byte for byte and already emit the
-escapes `gren-format` normalises to, so a diff afterwards means the script and
-the file have drifted. Each writes its row counts into a guard test, so an
+`tools/gen-numbers.py` and `tools/gen-strings.py` — or both at once, with
+`devbox run gen`. Neither script contains any Gren. The output is the matching
+file in `tools/templates/` rendered with jinja2, and the script only walks the
+corpus and hands over rows. Edit the shape of a suite in the template, not in a
+Python string.
+
+Both reproduce their file byte for byte and already emit the escapes
+`gren-format` normalises to, so a diff afterwards means the template and the
+file have drifted. Each writes its row counts into a guard test, so an
 extractor that quietly found nothing cannot produce a passing suite.
+
+`tools/templates/*.gren` are not compilable Gren — they are jinja2 — so keep
+them out of `gren-format` and off any source path.
 
 `toml-test/` is an application, not part of the package, and it depends on
 `gilramir/gren-toml` as `local:../` rather than putting `../src` on its source

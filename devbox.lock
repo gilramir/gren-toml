@@ -91,6 +91,117 @@
           "store_path": "/nix/store/gf597zf0ysgbngwb92baxgxjd02px6jh-nodejs-22.23.2"
         }
       }
+    },
+    "python312@latest": {
+      "last_modified": "2026-08-27T07:16:00Z",
+      "plugin_version": "0.0.5",
+      "resolved": "github:NixOS/nixpkgs/c27cdad491a991b11ed731760aa2ef8db0cb0410#python312",
+      "source": "devbox-search",
+      "version": "3.12.14",
+      "systems": {
+        "aarch64-darwin": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/p1wfv7znig26m3hns4583cb9va3kzxkg-python3-3.12.14",
+              "default": true
+            }
+          ],
+          "store_path": "/nix/store/p1wfv7znig26m3hns4583cb9va3kzxkg-python3-3.12.14"
+        },
+        "aarch64-linux": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/gsf1fvx39nm1hlj8wq6qr1xjicxnzf2v-python3-3.12.14",
+              "default": true
+            },
+            {
+              "name": "debug",
+              "path": "/nix/store/n26dkq3a90vpsly3cmpjm7k5bz7i6las-python3-3.12.14-debug"
+            }
+          ],
+          "store_path": "/nix/store/gsf1fvx39nm1hlj8wq6qr1xjicxnzf2v-python3-3.12.14"
+        },
+        "x86_64-linux": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/9ka5lknbqqg6nzs3zp6qyncf1k3ayz97-python3-3.12.14",
+              "default": true
+            },
+            {
+              "name": "debug",
+              "path": "/nix/store/ikyc73znayjnlld5rj1mwws9rhi0gaba-python3-3.12.14-debug"
+            }
+          ],
+          "store_path": "/nix/store/9ka5lknbqqg6nzs3zp6qyncf1k3ayz97-python3-3.12.14"
+        }
+      }
+    },
+    "python312Packages.jinja2@latest": {
+      "last_modified": "2025-11-23T21:50:36Z",
+      "resolved": "github:NixOS/nixpkgs/ee09932cedcef15aaf476f9343d1dea2cb77e261#python312Packages.jinja2",
+      "source": "devbox-search",
+      "version": "3.1.6",
+      "systems": {
+        "aarch64-darwin": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/bmh43x3jndf81yy8yhzn0kzb1hj3304s-python3.12-jinja2-3.1.6",
+              "default": true
+            },
+            {
+              "name": "dist",
+              "path": "/nix/store/pk6h7iwwcaydhkfm7y56xcq26wfc7axx-python3.12-jinja2-3.1.6-dist"
+            }
+          ],
+          "store_path": "/nix/store/bmh43x3jndf81yy8yhzn0kzb1hj3304s-python3.12-jinja2-3.1.6"
+        },
+        "aarch64-linux": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/g8qwml0nckbjqsczw0zvba807sv24cfs-python3.12-jinja2-3.1.6",
+              "default": true
+            },
+            {
+              "name": "dist",
+              "path": "/nix/store/dcc2rywkq5gf05ki3wv927fvbhf3f3a5-python3.12-jinja2-3.1.6-dist"
+            }
+          ],
+          "store_path": "/nix/store/g8qwml0nckbjqsczw0zvba807sv24cfs-python3.12-jinja2-3.1.6"
+        },
+        "x86_64-darwin": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/jhvjzkrxi13i4k6gqxl0m5zc4y48aycp-python3.12-jinja2-3.1.6",
+              "default": true
+            },
+            {
+              "name": "dist",
+              "path": "/nix/store/gazmg6fxn42qzmlvjvjqpdr8cnyyqafi-python3.12-jinja2-3.1.6-dist"
+            }
+          ],
+          "store_path": "/nix/store/jhvjzkrxi13i4k6gqxl0m5zc4y48aycp-python3.12-jinja2-3.1.6"
+        },
+        "x86_64-linux": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/83s8jfb2s7dlkk506x23fi8iflml1a7y-python3.12-jinja2-3.1.6",
+              "default": true
+            },
+            {
+              "name": "dist",
+              "path": "/nix/store/p356rrdwn4ggv2sal3jhqi9i4pl9y5pv-python3.12-jinja2-3.1.6-dist"
+            }
+          ],
+          "store_path": "/nix/store/83s8jfb2s7dlkk506x23fi8iflml1a7y-python3.12-jinja2-3.1.6"
+        }
+      }
     }
   }
 }

@@ -219,12 +219,13 @@ snapshots to get through.
 ### Regenerating the fixtures
 
 `tests/src/Numbers.gren` and `tests/src/Literals.gren` are generated from the
-corpus. Both reproduce their file byte for byte, so a diff after regenerating
-means the script and the file have drifted:
+corpus. The Gren around the generated tables lives in `tools/templates/`, as
+`.gren` files with jinja2 placeholders where the rows go, so the scripts hold
+extraction and nothing else. Both reproduce their file byte for byte, so a diff
+after regenerating means the template and the file have drifted:
 
 ```sh
-python3 tools/gen-numbers.py     # from the repo root
-python3 tools/gen-strings.py
+devbox run gen           # both scripts, from the repo root
 ```
 
 ## License
