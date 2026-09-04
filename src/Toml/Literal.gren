@@ -148,6 +148,11 @@ float number =
         else
             FloatVal { raw = "-inf", value = Ast.Infinite Ast.Negative }
 
+    else if number == 0 && 1 / number < 0 then
+        -- `String.fromFloat` writes negative zero as `0`. The sign is the only
+        -- thing there is to keep about it, so it is kept.
+        FloatVal { raw = "-0.0", value = Ast.Finite BigDecimal.zero }
+
     else
         let
             written =
@@ -160,6 +165,12 @@ float number =
                 FloatVal { raw = withPoint written, value = Ast.Finite shortest }
 
             Nothing ->
+                -- Not reachable. `String.fromFloat` writes a finite double as
+                -- digits with an optional sign, point and `e` exponent, and
+                -- `BigDecimal.fromString` reads all of those. Writing `nan`
+                -- here is the least wrong thing to do with a value that could
+                -- not be spelled, and the Encoding suite checks the shapes
+                -- `String.fromFloat` produces so a change to either would show.
                 FloatVal { raw = "nan", value = Ast.NotANumber Ast.Positive }
 
 

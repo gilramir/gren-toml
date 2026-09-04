@@ -48,6 +48,34 @@ It does not reach inside an inline table or an array. `a = {b = 1}` has the path
 That boundary is where the round trip stops being obvious -- an inline table has
 no lines to insert into -- so it is drawn here rather than guessed at.
 
+A path into an array of tables names its **last** item. That is what TOML
+itself means by the path: a `[peer.tls]` header or a `peer.x = 1` key after
+the second `[[peer]]` belongs to the second one. So `[ "peer", "x" ]` reads,
+changes or removes the `x` of the last `[[peer]]`, and a key that is not there
+yet is added to the last one too. The earlier items are reached by walking the
+AST, which is what it is there for.
+
+
+## What this module does not check
+
+Only syntax. Whether the file still *means* something afterwards is decided by
+[`Toml.Table.fromDocument`](Toml-Table#fromDocument), as it is for a file
+someone typed, and an edit can produce one it rejects. The ways that happen are
+the ways a path can point at something a key cannot be added beside:
+
+  - `set [ "a", "b" ]` when `a` is an inline table. The path does not reach in,
+    so a `[a]` header is added for `b`, and `a` is now defined twice.
+  - `set [ "a", "b", "c" ]` when `a.b = 1` wrote `b` as a dotted key. A `[a.b]`
+    header is added, and a header may not land on a table a dotted key built.
+  - `set [ "a" ]` when `[a]` is a header. The key and the table collide.
+
+None of those are refused here, because the rule that refuses them is a rule
+about what the document means and lives in the layer that decides that. After
+editing, read the result back through
+[`Toml.Decode.fromDocument`](Toml-Decode#fromDocument) or
+[`Toml.Table.fromDocument`](Toml-Table#fromDocument) before writing it out, if
+the paths were not yours to begin with.
+
 
 ## A real example
 
@@ -265,7 +293,10 @@ paths document =
 
 {-| The comments that belong to a key, by the convention above.
 
-    { leading = [ "# how long to wait" ], trailing = Just " seconds" }
+    { leading = [ " how long to wait" ], trailing = Just " seconds" }
+
+The text is what came after the `#`, leading space included, which is what
+[`setComments`](#setComments) takes back.
 
 -}
 comments : Array String -> Document -> { leading : Array String, trailing : Maybe String }
@@ -406,6 +437,16 @@ If there is no such key, one is added. It goes at the end of the table it belong
 to, after the last key already in it, indented to match. If the table does not
 exist either, a `[header]` for it is appended to the end of the file with the key
 beneath and a blank line above, and a file that ended with a newline still does.
+
+A top-level key added to a file that has no top-level keys yet goes *before* the
+first `[header]`, with a blank line between, since anything written after a
+header belongs to that header's table. It goes above the comment block directly
+over that header too, because that block is the header's by the convention
+above; a comment with a blank line under it stays where it is.
+
+An edit that gives the file a meaning it cannot have -- a key under an inline
+table, say -- is not refused here. See [what this module does not
+check](#what-this-module-does-not-check).
 
 -}
 set : Array String -> Value -> Document -> Document
@@ -774,6 +815,13 @@ setLastNewline ending expressions =
 
 
 {-| The index of the expression holding the key at `path`.
+
+The *last* one, if there are several. In a document that means anything there
+are several only when the path runs through an array of tables, and then the
+last item is the one TOML itself means by the path -- see [what a path means
+here](#what-a-path-means-here). It is also the item a new key is added to, so
+reading and writing agree about which `[[peer]]` a path names.
+
 -}
 indexOf : Array String -> Document -> Maybe Int
 indexOf path document =
@@ -788,23 +836,18 @@ indexOf path document =
         )
         document.expressions
         (headers document.expressions)
-        |> firstIndexOfTrue
+        |> lastIndexOfTrue
 
 
-firstIndexOfTrue : Array Bool -> Maybe Int
-firstIndexOfTrue flags =
+lastIndexOfTrue : Array Bool -> Maybe Int
+lastIndexOfTrue flags =
     Array.indexedFoldl
         (\index flag found ->
-            when found is
-                Just _ ->
-                    found
+            if flag then
+                Just index
 
-                Nothing ->
-                    if flag then
-                        Just index
-
-                    else
-                        Nothing
+            else
+                found
         )
         Nothing
         flags
@@ -899,17 +942,75 @@ insert path content document =
             , value = content
             }
     in
-    when lastOf tablePath document is
-        Just index ->
+    when { last = lastOf tablePath document, isRoot = Array.length tablePath == 0 } is
+        { last = Just index } ->
             insertAfter index pair document
 
-        Nothing ->
+        { last = Nothing, isRoot = True } ->
+            -- No top-level key to go after. Anything appended now would land
+            -- inside the last table, so the key goes ahead of the first header
+            -- instead, if there is one.
+            when firstHeader document is
+                Just index ->
+                    insertBefore index pair document
+
+                Nothing ->
+                    append tablePath pair document
+
+        _ ->
             append tablePath pair document
+
+
+{-| The first `[header]` in the file, which is where the top-level keys end.
+-}
+firstHeader : Document -> Maybe Int
+firstHeader document =
+    Array.indexedFoldl
+        (\index expression found ->
+            when { found = found, content = expression.content } is
+                { found = Nothing, content = Header _ } ->
+                    Just index
+
+                _ ->
+                    found
+        )
+        Nothing
+        document.expressions
+
+
+{-| A top-level key ahead of the first header, above the comment block that
+belongs to the header, with a blank line between the key and what it was put
+in front of. The blank line is the same one [`Toml.Encode`](Toml-Encode) puts
+before a header, and here it keeps the new key out of the header's block.
+-}
+insertBefore : Int -> Ast.KeyVal -> Document -> Document
+insertBefore index pair document =
+    let
+        at =
+            firstOwned index document.expressions
+
+        style =
+            styleOf document
+
+        added =
+            [ { indent = ""
+              , content = Pair { keyval = pair, trailing = "", comment = Nothing }
+              , newline = Just style
+              }
+            , { indent = "", content = Empty { comment = Nothing }, newline = Just style }
+            ]
+    in
+    rebuild document
+        (Array.prepend
+            (Array.takeFirst at document.expressions)
+            (Array.prepend added (Array.dropFirst at document.expressions))
+        )
 
 
 {-| The last header or key belonging to `tablePath`, which is where a new key
 goes. Trailing blank lines and floating comments are deliberately skipped: a new
-key belongs beside the keys, not after the gap.
+key belongs beside the keys, not after the gap. For an array of tables this is
+in the last item, which is the item [`indexOf`](#indexOf) finds too.
 -}
 lastOf : Array String -> Document -> Maybe Int
 lastOf tablePath document =

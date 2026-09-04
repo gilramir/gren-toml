@@ -38,6 +38,15 @@ how to change something *inside* one, because a path stops at the brace: an
 inline table has no lines to insert into, so the boundary is drawn there rather
 than guessed at.
 
+A path into an array of tables names its last item, which is the item TOML
+itself means by `[peer.tls]` or `peer.x = 1` after the second `[[peer]]`.
+
+`Toml.Edit` checks syntax and nothing else. A path that points at something a
+key cannot be added beside -- inside an inline table, say -- produces a file that
+`Toml.Table.fromDocument` will reject, for the same reason and with the same
+message as if someone had typed it. Read an edited document back before writing
+it out if the paths were not yours to begin with.
+
 `rename` gives a key a new name and touches nothing else on the line, quoting
 the name if the grammar will not take it bare. `renameTable` does the same for a
 table, taking every header nested under it and every dotted key that spells the
@@ -174,7 +183,7 @@ reward for being valid.
 ## Tests
 
 ```sh
-devbox run test          # 127 checks, ~0.9s, no network
+devbox run test          # 144 checks, ~0.9s, no network
 devbox run conformance   # the official toml-test runner; needs Go
 ```
 
@@ -200,7 +209,7 @@ RoundTrip: setUpSuite: ENOENT: no such file or directory,
 Semantics: setUpSuite: ...
 Values:    setUpSuite: ...
 
-FAILED — 88 passed, 0 failed, 11 errored
+FAILED — 136 passed, 0 failed, 11 errored
 ```
 
 `0 failed, 11 errored` is the signature: nothing is wrong with the library,

@@ -3,7 +3,7 @@ module Toml.Table exposing
     , fromDocument
     , get, entries, keys, values
     , member, count, isEmpty
-    , Error, errorToString
+    , Error, Reason(..), errorToString
     )
 
 {-| The other layer: a TOML document as the data it describes.
@@ -148,7 +148,7 @@ which is the division this package is built on -- see the two layers above.
 
 ## Errors
 
-@docs Error, errorToString
+@docs Error, Reason, errorToString
 
 -}
 
@@ -221,6 +221,10 @@ type alias Error =
     }
 
 
+{-| What was wrong at the path. One case for each rule above; a program that
+wants to tell a duplicate key from a redefined table can do so without parsing
+the text [`errorToString`](#errorToString) writes.
+-}
 type Reason
     = KeyDefinedTwice
     | TableDefinedTwice
@@ -286,10 +290,6 @@ values (Table table) =
 
 
 {-| Whether there is a key of this name.
-
-Not the same question as `get name found /= Nothing` looks like it is, in the
-sense that this one does not build the value to answer it.
-
 -}
 member : String -> Table -> Bool
 member name (Table table) =
@@ -465,20 +465,29 @@ after `[[a]]` mean the `b` of the most recent `a`.
 -}
 descendTo : Array String -> Table -> (Table -> Result Error Table) -> Result Error Table
 descendTo path root change =
+    descendHelp path [] root change
+
+
+descendHelp : Array String -> Array String -> Table -> (Table -> Result Error Table) -> Result Error Table
+descendHelp path seen root change =
     when Array.popFirst path is
         Nothing ->
             change root
 
         Just { first = name, rest } ->
+            let
+                here =
+                    Array.pushLast name seen
+            in
             when get name root is
                 Just (TableValue sub) ->
-                    descendTo rest sub change
+                    descendHelp rest here sub change
                         |> Result.map (\built -> put name (TableValue built) root)
 
                 Just (TableArrayValue items) ->
                     when Array.popLast items is
                         Just { last = sub, initial } ->
-                            descendTo rest sub change
+                            descendHelp rest here sub change
                                 |> Result.map
                                     (\built ->
                                         put name
@@ -487,10 +496,13 @@ descendTo path root change =
                                     )
 
                         Nothing ->
-                            Err { path = name, reason = NotATable }
+                            Err { path = join here, reason = NotATable }
 
                 _ ->
-                    Err { path = name, reason = NotATable }
+                    -- Not reached: the header that set this path built every
+                    -- table on it. Reported in full like the other errors
+                    -- anyway, so that it is not a puzzle if it ever is.
+                    Err { path = join here, reason = NotATable }
 
 
 {-| Walk to the last segment of `path`, creating what is missing, and apply

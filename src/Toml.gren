@@ -130,26 +130,44 @@ parseBytes bytes =
             Err { row = 1, col = 1, expecting = "valid UTF-8" }
 
         Just text ->
-            parse text
+            -- Decoding took one leading mark off already. Any that is still
+            -- there is a second one, and the grammar is right to refuse it.
+            parseDecoded text
                 |> Result.map (\doc -> { doc | hasBom = startsWithBom bytes })
 
 
 {-| Read a TOML file from a string.
 
 Offered for convenience and for callers who already have the text. It cannot
-detect an encoding error, by construction -- see [`parseBytes`](#parseBytes) --
-and a document parsed this way is recorded as having no byte order mark, since
-whatever removed the bytes did not say whether there was one.
+detect an encoding error, by construction -- see [`parseBytes`](#parseBytes).
+
+A byte order mark it can still see. Not every way of reading a file as text
+removes one, so if the string begins with `U+FEFF` that is taken to be the
+file's mark, dropped, and recorded so that [`toString`](#toString) puts it
+back. If something removed it before the text got here, the document is
+recorded as having none, since whatever removed it did not say.
 
 -}
 parse : String -> Result Error Document
 parse text =
+    if String.startsWith "\u{FEFF}" text then
+        parseDecoded (String.dropFirst 1 text)
+            |> Result.map (\doc -> { doc | hasBom = True })
+
+    else
+        parseDecoded text
+
+
+{-| Parse text that has had its byte order mark, if any, taken off already.
+-}
+parseDecoded : String -> Result Error Document
+parseDecoded text =
     when P.run Parse.document {} text is
         Ok doc ->
             Ok doc
 
         Err deadEnds ->
-            Err (firstError deadEnds)
+            Err (chooseError deadEnds)
 
 
 {-| Write a document back out.
@@ -197,13 +215,44 @@ errorToString error =
         ++ error.expecting
 
 
-firstError : Array (P.DeadEnd {} Parse.Problem) -> Error
-firstError deadEnds =
-    when Array.first deadEnds is
-        Just deadEnd ->
-            { row = deadEnd.row
-            , col = deadEnd.col
-            , expecting = Parse.problemToString deadEnd.problem
+{-| The one dead end worth reporting.
+
+The parser hands back every alternative that failed where it stopped, and the
+first of them is usually the least helpful: for `a = @` it is the opening quote
+of a string, because strings are tried first. The furthest position wins, and at
+that position the problem [`Toml.Parse.rank`](Toml-Parse#rank) puts highest --
+"a value" over the eight ways of starting one.
+
+-}
+chooseError : Array (P.DeadEnd {} Parse.Problem) -> Error
+chooseError deadEnds =
+    let
+        better candidate best =
+            if candidate.row /= best.row then
+                candidate.row > best.row
+
+            else if candidate.col /= best.col then
+                candidate.col > best.col
+
+            else
+                Parse.rank candidate.problem > Parse.rank best.problem
+
+        prefer candidate best =
+            if better candidate best then
+                candidate
+
+            else
+                best
+    in
+    when Array.popFirst deadEnds is
+        Just { first, rest } ->
+            let
+                chosen =
+                    Array.foldl prefer first rest
+            in
+            { row = chosen.row
+            , col = chosen.col
+            , expecting = Parse.problemToString chosen.problem
             }
 
         Nothing ->

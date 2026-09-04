@@ -301,14 +301,24 @@ section path fields =
         (Array.mapAndFlatten (header path) nested)
 
 
+{-| Whether a value is written as `[header]` lines rather than beside its key.
+
+An *empty* array of tables is not: there would be no headers to write, and the
+key would vanish from the file. It is written as `key = []` instead, which a
+reader cannot tell from an empty array of tables and which keeps the key.
+
+-}
 isSection : Value -> Bool
 isSection content =
     when content is
         Scalar _ ->
             False
 
-        _ ->
+        Section _ ->
             True
+
+        Sections items ->
+            Array.length items > 0
 
 
 keyLine : Array String -> Field -> Expression
@@ -509,6 +519,10 @@ inlineTable fields =
     -->
     -->  [[peer]]
     -->  name = "beta"
+
+An empty one has no headers to write, so it is written as `peer = []` rather
+than not at all. A reader cannot tell the two apart, and a key must not vanish
+from a file because its array happened to be empty.
 
 -}
 tableArray : Array (Array Field) -> Value

@@ -19,6 +19,7 @@ final newline.
 
 import Array exposing (Array)
 import Basics exposing (..)
+import BigInt
 import Bytes
 import Expect
 import Maybe exposing (Maybe(..))
@@ -29,6 +30,7 @@ import Test.Runner.UnitNode as U
 import Toml
 import Toml.Ast as Ast
 import Toml.Edit as Edit
+import Toml.Table as Table
 
 
 {-| The file under test, as lines. Written this way so the whitespace in it is
@@ -137,6 +139,16 @@ editing text change =
         |> Result.map (change >> Toml.toString)
 
 
+intValue : Table.Value -> Maybe Int
+intValue found =
+    when found is
+        Table.IntegerValue whole ->
+            BigInt.toInt whole
+
+        _ ->
+            Nothing
+
+
 {-| -}
 editingSuite : U.Suite
 editingSuite =
@@ -224,6 +236,50 @@ editingSuite =
                 Task.succeed
                     (Expect.equal (Ok "[b]\nc = 2\n")
                         (editing "" (Edit.set [ "b", "c" ] (Edit.int 2)))
+                    )
+            , U.test "a top-level key in a file with none yet goes before the first header, not inside the last table" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok "y = 2\n\n[a]\nx = 1\n")
+                        (editing "[a]\nx = 1\n" (Edit.set [ "y" ] (Edit.int 2)))
+                    )
+            , U.test "and above the comment block that belongs to that header" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok "y = 2\n\n# about a\n[a]\nx = 1\n")
+                        (editing "# about a\n[a]\nx = 1\n" (Edit.set [ "y" ] (Edit.int 2)))
+                    )
+            , U.test "but below a comment the blank line under it gave to the document" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok "# title\n\ny = 2\n\n[a]\nx = 1\n")
+                        (editing "# title\n\n[a]\nx = 1\n" (Edit.set [ "y" ] (Edit.int 2)))
+                    )
+            , U.test "and it really is top-level: the table tree agrees" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok (Just 2))
+                        (Toml.parse "# about a\n[a]\nx = 1"
+                            |> Result.mapError Toml.errorToString
+                            |> Result.map (Edit.set [ "y" ] (Edit.int 2))
+                            |> Result.andThen (Table.fromDocument >> Result.mapError Table.errorToString)
+                            |> Result.map (Table.get "y" >> Maybe.andThen intValue)
+                        )
+                    )
+            -- ARRAYS OF TABLES
+            , U.test "a path into an array of tables names its last item, as TOML does" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok "[[p]]\nx = 1\n\n[[p]]\nx = 9\n")
+                        (editing "[[p]]\nx = 1\n\n[[p]]\nx = 2\n" (Edit.set [ "p", "x" ] (Edit.int 9)))
+                    )
+            , U.test "and a new key goes into that same item" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok "[[p]]\nx = 1\n\n[[p]]\nx = 2\ny = 9\n")
+                        (editing "[[p]]\nx = 1\n\n[[p]]\nx = 2\n" (Edit.set [ "p", "y" ] (Edit.int 9)))
+                    )
+            , U.test "so get reads what set would change" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok (Just "2"))
+                        (Toml.parse "[[p]]\nx = 1\n\n[[p]]\nx = 2\n"
+                            |> Result.mapError Toml.errorToString
+                            |> Result.map (Edit.get [ "p", "x" ] >> Maybe.map rawOf)
+                        )
                     )
             -- REMOVING A KEY, AND ITS COMMENTS
             , U.test "removing a key takes the comment block above it" <| \_ ->
@@ -561,6 +617,14 @@ editingSuite =
                         (Toml.parseBytes original
                             |> Result.mapError Toml.errorToString
                             |> Result.map (Toml.toBytes >> Bytes.length)
+                        )
+                    )
+            , U.test "unless the String still has the mark, which parse then keeps too" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok ("﻿" ++ source))
+                        (Toml.parse ("﻿" ++ source)
+                            |> Result.mapError Toml.errorToString
+                            |> Result.map Toml.toString
                         )
                     )
             -- AND THE RESULT IS STILL A TOML FILE

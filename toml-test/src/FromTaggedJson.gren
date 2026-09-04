@@ -116,10 +116,11 @@ asValue content =
 
 {-| An array of nothing but tables becomes `[[header]]` sections, which is the
 readable spelling and the one worth exercising. Anything else -- a mixed array,
-or an empty one -- has to stay between brackets.
+or one with a scalar in it -- has to stay between brackets.
 
-The empty case is not a nicety: an array of tables with no items would write no
-lines at all, and the key would vanish from the file.
+An empty array counts as nothing but tables, so it goes through `tableArray`
+too, which writes it as `key = []`. That is deliberate: it is the one place the
+official suite exercises that spelling.
 
 -}
 asArray : Array Json -> Result String Encode.Value
@@ -137,7 +138,7 @@ asArray items =
                 )
                 items
     in
-    if Array.length items > 0 && Array.length tables == Array.length items then
+    if Array.length tables == Array.length items then
         Array.foldl
             (\fields soFar -> Result.map2 Array.pushLast (asFields fields) soFar)
             (Ok [])

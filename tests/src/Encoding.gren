@@ -181,6 +181,35 @@ encodingSuite =
                             (Decode.field "a" Decode.float)
                         )
                     )
+            , U.test "an empty array of tables is written as an empty array, so the key does not vanish" <| \_ ->
+                Task.succeed
+                    (Expect.equal "peer = []\nb = 1\n"
+                        (Encode.toString [ field "peer" (Encode.tableArray []), field "b" (Encode.int 1) ])
+                    )
+            , U.test "and it reads back as an empty array" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok [])
+                        (readBack [ field "peer" (Encode.tableArray []) ]
+                            (Decode.field "peer" (Decode.array Decode.int))
+                        )
+                    )
+            , U.test "negative zero keeps its sign" <| \_ ->
+                Task.succeed
+                    (Expect.equal "z = -0.0\n"
+                        (Encode.toString [ field "z" (Encode.float (Basics.negate 0.0)) ])
+                    )
+            , U.test "every shape String.fromFloat writes is a TOML float and reads back" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok [ 1.0e21, 1.0e-7, 1.0e300, 123456.789, 5.0e-324 ])
+                        (readBack
+                            [ field "n"
+                                (Encode.array
+                                    (Array.map Encode.float [ 1.0e21, 1.0e-7, 1.0e300, 123456.789, 5.0e-324 ])
+                                )
+                            ]
+                            (Decode.field "n" (Decode.array Decode.float))
+                        )
+                    )
             , U.test "inf and nan are written as those words" <| \_ ->
                 Task.succeed
                     (Expect.equal

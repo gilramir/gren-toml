@@ -1,7 +1,7 @@
 module Toml.Parse exposing
     ( Problem(..)
     , document, expressions
-    , problemToString
+    , problemToString, rank
     )
 
 {-| Turning TOML source into the syntactic AST, keeping every character.
@@ -45,7 +45,7 @@ scanner therefore consumes a whole run of three or more and stops, leaving
 
 ## Errors
 
-@docs problemToString
+@docs problemToString, rank
 
 -}
 
@@ -88,6 +88,10 @@ The three `Malformed` cases carry the text that was chomped, because by the time
 they happen the parser has a whole literal in hand and the useful thing to say
 is which one it could not read.
 
+`ExpectingExpression` is what a line that starts with something that is not a
+key, a header or a comment gets. The grammar itself would say "the end of the
+line", since an empty expression is a legal one, and that is true and useless.
+
 -}
 type Problem
     = ExpectingKey
@@ -95,6 +99,7 @@ type Problem
     | ExpectingValue
     | ExpectingNewline
     | ExpectingEndOfFile
+    | ExpectingExpression
     | ExpectingComment
     | ExpectingDot
     | ExpectingArrayOpen
@@ -131,6 +136,9 @@ problemToString problem =
         ExpectingEndOfFile ->
             "the end of the file"
 
+        ExpectingExpression ->
+            "a key, a table header, a comment or the end of the line"
+
         ExpectingComment ->
             "a comment"
 
@@ -159,7 +167,7 @@ problemToString problem =
             "a ']' closing the table header"
 
         ExpectingStringDelimiter ->
-            "a quote opening or closing a string"
+            "a closing quote for the string"
 
         ExpectingStringCharacter ->
             "a character allowed in a string"
@@ -172,6 +180,89 @@ problemToString problem =
 
         MalformedKey raw ->
             "a key, but " ++ raw ++ " is not one"
+
+
+{-| How much a problem is worth reporting, when several were found at the same
+place.
+
+`String.Parser.Advanced` hands back every alternative that failed where the
+parser stopped, in the order they were tried. For `a = @` that is the four kinds
+of string literal, the two booleans, an array, an inline table and finally "a
+value" -- and the first of those, the one about a quote, is the worst thing to
+tell someone who typed `@`. So `Toml` chooses by rank rather than by order: the
+problem that names what was wanted outranks the ones that name one of the ways
+of spelling it.
+
+The `Malformed` cases are highest because they only ever happen alone and carry
+the text. Opening delimiters are lowest, since an opening quote or bracket is
+only ever one alternative among several. The closing quote sits just above
+them: it is what an unterminated literal is missing, and the only other thing
+that fails at that position is "a character allowed in a string", which is
+never the better description of the end of a line.
+
+-}
+rank : Problem -> Int
+rank problem =
+    when problem is
+        MalformedString _ ->
+            9
+
+        MalformedValue _ ->
+            9
+
+        MalformedKey _ ->
+            9
+
+        ExpectingExpression ->
+            8
+
+        ExpectingValue ->
+            7
+
+        ExpectingKey ->
+            7
+
+        ExpectingEquals ->
+            6
+
+        ExpectingSeparator ->
+            5
+
+        ExpectingNewline ->
+            4
+
+        ExpectingArrayClose ->
+            3
+
+        ExpectingInlineTableClose ->
+            3
+
+        ExpectingTableClose ->
+            3
+
+        ExpectingEndOfFile ->
+            2
+
+        ExpectingStringDelimiter ->
+            1
+
+        ExpectingStringCharacter ->
+            0
+
+        ExpectingComment ->
+            0
+
+        ExpectingDot ->
+            0
+
+        ExpectingArrayOpen ->
+            0
+
+        ExpectingInlineTableOpen ->
+            0
+
+        ExpectingTableOpen ->
+            0
 
 
 type alias P a =
@@ -221,6 +312,17 @@ expressionsStep found =
                             )
                     , P.end ExpectingEndOfFile
                         |> P.map (\_ -> Done (Array.pushLast expr found))
+                    , -- Neither, so the line goes on past its expression. When
+                      -- the expression was nothing at all, what is really
+                      -- missing is the expression, not the line ending.
+                      P.problem
+                        (when expr.content is
+                            Empty { comment = Nothing } ->
+                                ExpectingExpression
+
+                            _ ->
+                                ExpectingNewline
+                        )
                     ]
             )
 
@@ -568,9 +670,11 @@ numberOrDateTime =
 {-| `time-delim = "T" / %x20`: a date and a time may be separated by a space, so
 a run that is exactly a date may have another run after it.
 
-Backtrackable, because a space that is not followed by a digit is the end of the
+Backtrackable, because a space that is not followed by a time is the end of the
 value and belongs to whatever comes next -- the whitespace before a comment,
-usually.
+usually. The second run is only kept if the two together read as a date-time:
+`1979-05-27 08` is a date followed by something that is not part of it, and the
+error should point at the `08` rather than call the date malformed.
 
 -}
 dateTimeTail : String -> P String
@@ -589,6 +693,14 @@ dateTimeTail first =
                                 |> P.skip (P.chompIf Char.isDigit ExpectingValue)
                                 |> P.skip (P.chompWhile isValueChar)
                             )
+                        )
+                    |> P.andThen
+                        (\whole ->
+                            if DateTime.fromString whole == Nothing then
+                                P.problem ExpectingValue
+
+                            else
+                                P.succeed whole
                         )
                 )
             , P.succeed first

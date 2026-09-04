@@ -37,7 +37,7 @@ Everything runs inside devbox; `gren` and node 22 are not on `PATH` otherwise.
 ```sh
 devbox run build    # compile the package
 devbox run docs     # check the doc comments parse
-devbox run test     # tests/run.sh: 127 checks, 714 of them corpus files, ~0.9s
+devbox run test     # tests/run.sh: 144 checks, 714 of them corpus files, ~0.9s
 devbox run gen      # regenerate the two generated test fixtures
 
 devbox run conformance   # toml-test/: the official runner. Needs Go and,
@@ -90,6 +90,24 @@ ending with one. `append` goes through `beforeTerminator` for exactly this, and
 Both were caught by the editing suite comparing whole files rather than the
 value that changed. Keep it that way: "the edit was wrong" is not the failure
 mode this package has, "everything else moved" is.
+
+Two more rules of `Toml.Edit` that are easy to lose:
+
+- **A top-level key never goes after a header.** `insert` puts it after the
+  last top-level key, and when there is none, *before* the first header. The
+  fallback `append` is only for a file with no headers at all, or for a key
+  that brings its own header with it.
+- **A path into an array of tables means the last item**, for reading and
+  writing alike. `indexOf` takes the last match for exactly this reason.
+
+## Parse errors are chosen, not taken
+
+`String.Parser.Advanced` returns every alternative that failed where it
+stopped, and the first one is usually the least helpful -- for `a = @` it is
+the opening quote of a string. `Toml.chooseError` takes the furthest position
+and, among ties, the highest `Toml.Parse.rank`. **A new `Problem` constructor
+needs a rank**, and the Decoding suite pins the messages for the common
+mistakes.
 
 ## Toml.Encode's two rules that look cosmetic and are not
 
