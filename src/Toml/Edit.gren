@@ -23,7 +23,9 @@ module Toml.Edit exposing
     , renameTable
     , set
     , setComments
+    , setTableComments
     , string
+    , tableComments
     )
 
 {-| Changing a TOML file and leaving the rest of it alone.
@@ -60,6 +62,11 @@ The blank line is the escape hatch, and it is worth knowing about. A comment
 block that introduces a whole section rather than the one key under it should
 have a blank line beneath it, or deleting that key will take the section heading
 with it.
+
+A `[header]` line owns comments the same way a key does: the block directly
+above it and the comment beside it are the header's. [`removeTable`](#removeTable)
+takes them with the table, [`tableComments`](#tableComments) reads them and
+[`setTableComments`](#setTableComments) writes them.
 
 
 ## What a path means here
@@ -174,6 +181,16 @@ has no lines to insert between:
     -->  # Turn this off to go quiet.
     -->  enabled = true # on by default
 
+**Explain a section.** A header owns the block above it the way a key does, and
+[`setTableComments`](#setTableComments) writes it:
+
+    Toml.Edit.setTableComments [ "servers", "alpha" ]
+        { blankBefore = True, leading = [ " The primary." ], trailing = Nothing }
+
+    -->  # The primary.
+    -->  [servers.alpha]
+    -->  ip = "10.0.0.1"
+
 **Write a value and explain it, but only the first time.**
 [`introduce`](#introduce) is [`set`](#set) plus the comments a key gets when
 this is the call that invented it, and nothing at all to a key already in the
@@ -263,7 +280,7 @@ with the file already existing.
 
 ## Comments
 
-@docs Comments, comments, setComments
+@docs Comments, comments, setComments, tableComments, setTableComments
 
 
 ## Looking around
@@ -432,26 +449,77 @@ comments : Array String -> Document -> Comments
 comments path document =
     when indexOf path document is
         Nothing ->
-            { blankBefore = False, leading = [], trailing = Nothing }
+            noComments
 
         Just index ->
-            { blankBefore = isBlank (firstOwned index document.expressions - 1) document.expressions
-            , leading =
-                Array.slice (firstOwned index document.expressions) index document.expressions
-                    |> Array.mapAndKeepJust ownComment
-            , trailing =
-                when Array.get index document.expressions is
-                    Just expression ->
-                        when expression.content is
-                            Pair fields ->
-                                Maybe.map .text fields.comment
+            commentsAt index document
 
-                            _ ->
-                                Nothing
 
-                    Nothing ->
-                        Nothing
-            }
+{-| The comments that belong to a table's `[header]` line: the block directly
+above it and the comment beside it, by the same convention as a key's, and the
+same ones [`removeTable`](#removeTable) takes with the table.
+
+    Toml.Edit.tableComments [ "servers", "alpha" ]
+
+    -->  { blankBefore = True, leading = [ " The primary." ], trailing = Nothing }
+
+For an array of tables the path means the **first** `[[header]]`, which is the
+other way round from every other path in this module. A path into an array of
+tables names its last item when it names a *value*, because that is the item
+TOML means by it. A comment over a header explains the key -- the whole array --
+and the first header is where [`Toml.Encode`](Toml-Encode#commented) writes it.
+The other items are reached through the AST.
+
+A table with no header line of its own -- one that only `[a.b]` implied, or one
+a dotted key built -- has no line for a comment to be on, and reads as
+`{ blankBefore = False, leading = [], trailing = Nothing }`. So does a table that
+is not there.
+
+-}
+tableComments : Array String -> Document -> Comments
+tableComments path document =
+    when headerIndexOf path document is
+        Nothing ->
+            noComments
+
+        Just index ->
+            commentsAt index document
+
+
+noComments : Comments
+noComments =
+    { blankBefore = False, leading = [], trailing = Nothing }
+
+
+{-| The comments owned by the expression at `index`, a key or a header.
+-}
+commentsAt : Int -> Document -> Comments
+commentsAt index document =
+    let
+        start =
+            firstOwned index document.expressions
+    in
+    { blankBefore = isBlank (start - 1) document.expressions
+    , leading =
+        Array.slice start index document.expressions
+            |> Array.mapAndKeepJust ownComment
+    , trailing =
+        Array.get index document.expressions
+            |> Maybe.andThen trailingCommentOf
+    }
+
+
+trailingCommentOf : Expression -> Maybe String
+trailingCommentOf expression =
+    when expression.content is
+        Pair fields ->
+            Maybe.map .text fields.comment
+
+        Header fields ->
+            Maybe.map .text fields.comment
+
+        Empty _ ->
+            Nothing
 
 
 ownComment : Expression -> Maybe String
@@ -477,12 +545,22 @@ isHeader index expressions =
 {-| Whether the expression at `index` is an empty line with no comment on it.
 
 `False` for an index off either end, which is what makes the top of the file
-answer "no blank line above": there is nothing above it to be blank.
+answer "no blank line above": there is nothing above it to be blank. The guard
+on a negative index is not defensive -- `Array.get -1` in Gren is the *last*
+element, and without it the first key of a file was asked whether the line
+after the final newline was blank, and it was.
 
 -}
 isBlank : Int -> Array Expression -> Bool
 isBlank index expressions =
-    when Array.get index expressions is
+    when
+        (if index < 0 then
+            Nothing
+
+         else
+            Array.get index expressions
+        )
+    is
         Just expression ->
             when expression.content is
                 Empty fields ->
@@ -536,56 +614,112 @@ setComments path wanted document =
             document
 
         Just index ->
-            let
-                indent =
-                    Array.get index document.expressions
-                        |> Maybe.map .indent
-                        |> Maybe.withDefault ""
-
-                block =
-                    Array.map
-                        (\text ->
-                            { indent = indent
-                            , content = Empty { comment = Just { text = text } }
-                            , newline = Just (styleOf document)
-                            }
-                        )
-                        wanted.leading
-
-                start =
-                    firstOwned index document.expressions
-            in
-            rebuild document
-                (Array.prepend
-                    (Array.prepend
-                        (spacedTo wanted.blankBefore
-                            (styleOf document)
-                            (Array.takeFirst start document.expressions)
-                        )
-                        block
-                    )
-                    (Array.dropFirst index document.expressions
-                        |> Array.update 0 (setTrailingComment wanted.trailing)
-                    )
-                )
+            setCommentsAt AKey index wanted document
 
 
-{-| Everything above a key's comment block, with a blank line at the end of it
-or without one, as asked.
+{-| Set the comments that belong to a table's `[header]` line, by the same
+convention [`tableComments`](#tableComments) reads them by.
 
-A blank is not added in two places. At the top of the document there is no
-line above to be blank. Directly under a `[header]` there is one, but the key
-is the first of its table and a blank there would push it away from the header
-it belongs to -- the same rule [`Toml.Encode`](Toml-Encode) writes by, and the
-case [`introduce`](#introduce) lands in every time it is the call that brought
-the header with it. Taking a blank away works in both places.
+    Toml.Edit.setTableComments [ "servers", "alpha" ]
+        { blankBefore = True, leading = [ " The primary." ], trailing = Nothing }
+
+    -->  <a blank line>
+    -->  # The primary.
+    -->  [servers.alpha]
+
+The two are inverses, as [`comments`](#comments) and
+[`setComments`](#setComments) are, and for an array of tables the path means
+the first `[[header]]` for the reason given there.
+
+This is how a program explains a section it created. [`introduce`](#introduce)
+explains a key, and the header it brought with that key has nothing over it
+until this is called; calling it only when [`member`](#member) said the first
+key was not there yet keeps the explanation to the run that invented the
+section, which is the same rule `introduce` keeps for a key.
+
+One difference from `setComments`: `blankBefore = True` directly under another
+header *is* honoured. The first key of a table belongs against its header, but a
+nested header directly under its parent is two sections meeting, and the blank
+between them is the one [`Toml.Encode`](Toml-Encode) keeps. At the top of the
+file it is still a no-op.
+
+A table with no header line, or none at all, is left alone.
 
 -}
-spacedTo : Bool -> Newline -> Array Expression -> Array Expression
-spacedTo wanted newline before =
+setTableComments : Array String -> Comments -> Document -> Document
+setTableComments path wanted document =
+    when headerIndexOf path document is
+        Nothing ->
+            document
+
+        Just index ->
+            setCommentsAt ATable index wanted document
+
+
+{-| What a comment block is being written above. A key directly under its
+`[header]` is not held off it by a blank line; a nested header directly under
+its parent is two sections meeting, and may be.
+-}
+type Owner
+    = AKey
+    | ATable
+
+
+setCommentsAt : Owner -> Int -> Comments -> Document -> Document
+setCommentsAt owner index wanted document =
+    let
+        indent =
+            Array.get index document.expressions
+                |> Maybe.map .indent
+                |> Maybe.withDefault ""
+
+        block =
+            Array.map
+                (\text ->
+                    { indent = indent
+                    , content = Empty { comment = Just { text = text } }
+                    , newline = Just (styleOf document)
+                    }
+                )
+                wanted.leading
+
+        start =
+            firstOwned index document.expressions
+    in
+    rebuild document
+        (Array.prepend
+            (Array.prepend
+                (spacedTo owner
+                    wanted.blankBefore
+                    (styleOf document)
+                    (Array.takeFirst start document.expressions)
+                )
+                block
+            )
+            (Array.dropFirst index document.expressions
+                |> Array.update 0 (setTrailingComment wanted.trailing)
+            )
+        )
+
+
+{-| Everything above a comment block, with a blank line at the end of it or
+without one, as asked.
+
+A blank is not added in two places. At the top of the document there is no
+line above to be blank. Directly under a `[header]`, when what is being
+explained is a key, there is one, but the key is the first of its table and a
+blank there would push it away from the header it belongs to -- the same rule
+[`Toml.Encode`](Toml-Encode) writes by, and the case [`introduce`](#introduce)
+lands in every time it is the call that brought the header with it. A nested
+header under its parent is the other way: two sections meeting, and the blank
+is wanted. Taking a blank away works everywhere.
+
+-}
+spacedTo : Owner -> Bool -> Newline -> Array Expression -> Array Expression
+spacedTo owner wanted newline before =
     when { wanted = wanted, has = isBlank (Array.length before - 1) before } is
         { wanted = True, has = False } ->
-            if Array.length before == 0 || isHeader (Array.length before - 1) before then
+            if Array.length before == 0 || (owner == AKey && isHeader (Array.length before - 1) before) then
                 before
 
             else
@@ -600,7 +734,7 @@ spacedTo wanted newline before =
             before
 
 
-{-| The comment on the key's own line.
+{-| The comment on the key's own line, or on the header's.
 
 The whitespace before it is the line's and is kept, except that a comment being
 added to a line that had none gets a space put in front of it -- `x = 1# note`
@@ -610,28 +744,30 @@ whitespace with it, rather than leaving the line ending in spaces.
 -}
 setTrailingComment : Maybe String -> Expression -> Expression
 setTrailingComment text expression =
+    let
+        spaced current =
+            when text is
+                Just _ ->
+                    if current == "" then
+                        " "
+
+                    else
+                        current
+
+                Nothing ->
+                    ""
+
+        comment =
+            Maybe.map (\it -> { text = it }) text
+    in
     when expression.content is
         Pair fields ->
-            { expression
-                | content =
-                    Pair
-                        { fields
-                            | trailing =
-                                when text is
-                                    Just _ ->
-                                        if fields.trailing == "" then
-                                            " "
+            { expression | content = Pair { fields | trailing = spaced fields.trailing, comment = comment } }
 
-                                        else
-                                            fields.trailing
+        Header fields ->
+            { expression | content = Header { fields | trailing = spaced fields.trailing, comment = comment } }
 
-                                    Nothing ->
-                                        ""
-                            , comment = Maybe.map (\it -> { text = it }) text
-                        }
-            }
-
-        _ ->
+        Empty _ ->
             expression
 
 
@@ -686,9 +822,10 @@ escapes, an integer or float is its number whatever base or spelling it was
 written in, a date-time is the instant and the offset, an array is its elements
 in order, and an inline table is its entries in order. So `set` over `0x1F` with
 `int 31` changes nothing and the file keeps saying `0x1F`. To change the
-spelling rather than the value, [`remove`](#remove) the key and set it again --
-which loses the comments with it, and is the honest price of asking for the line
-to be rewritten.
+spelling rather than the value, [`remove`](#remove) the key and set it again.
+That takes the comments the key owned away with the line, so read them first
+with [`comments`](#comments) and put them back with [`setComments`](#setComments)
+after.
 
 An edit that gives the file a meaning it cannot have -- a key under an inline
 table, say -- is not refused here. See [what this module does not
@@ -1214,6 +1351,36 @@ lastIndexOfTrue flags =
         )
         Nothing
         flags
+
+
+{-| The index of the `[header]` line for the table at `path`.
+
+The *first* one, if there are several, which for an array of tables is its
+first `[[item]]`. That is the opposite choice from [`indexOf`](#indexOf), and it
+is deliberate rather than an oversight: a path into an array of tables means
+the last item when it names a value, because that is the item TOML means, but
+the comment block over a header explains the key -- the whole array -- and the
+first header is where `Toml.Encode` writes it. The two live in separate
+functions so that neither choice can leak into the other.
+
+-}
+headerIndexOf : Array String -> Document -> Maybe Int
+headerIndexOf path document =
+    Array.indexedFoldl
+        (\index expression found ->
+            when { found = found, content = expression.content } is
+                { found = Nothing, content = Header fields } ->
+                    if Literal.path fields.header.key == path then
+                        Just index
+
+                    else
+                        Nothing
+
+                _ ->
+                    found
+        )
+        Nothing
+        document.expressions
 
 
 {-| The table header in effect at each expression, in file order.

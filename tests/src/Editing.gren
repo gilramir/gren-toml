@@ -30,6 +30,7 @@ import Test.Runner.UnitNode as U
 import Toml
 import Toml.Ast as Ast
 import Toml.Edit as Edit
+import Toml.Encode as Encode
 import Toml.Table as Table
 
 
@@ -656,7 +657,98 @@ editingSuite =
                             )
                         )
                     )
+            -- A HEADER'S OWN COMMENTS
+            , U.test "tableComments reads the block over a header, and a floating one is not it" <| \_ ->
+                -- The block above [server] has a blank line under it, so it is
+                -- nobody's; all the header owns is the blank.
+                Task.succeed
+                    (Expect.equal
+                        (Ok { blankBefore = True, leading = [], trailing = Nothing })
+                        (Toml.parse source
+                            |> Result.mapError Toml.errorToString
+                            |> Result.map (Edit.tableComments [ "server" ])
+                        )
+                    )
+            , U.test "setTableComments explains a section" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expecting
+                            (beforeLine "[server.tls]" "# Encryption."
+                                >> replaceLine "[server.tls]" "[server.tls] # off by default"
+                            )
+                        )
+                        (edit
+                            (Edit.setTableComments [ "server", "tls" ]
+                                { blankBefore = True
+                                , leading = [ " Encryption." ]
+                                , trailing = Just " off by default"
+                                }
+                            )
+                        )
+                    )
+            , U.test "reading a header's comments and writing them back changes nothing" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok source)
+                        (edit
+                            (\document ->
+                                Array.foldl
+                                    (\path soFar ->
+                                        Edit.setTableComments path (Edit.tableComments path document) soFar
+                                    )
+                                    document
+                                    [ [ "server" ], [ "server", "tls" ], [ "logging" ] ]
+                            )
+                        )
+                    )
+            , U.test "for an array of tables it is the first header, where Encode puts them" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok "# Everyone we talk to.\n[[peer]]\nn = 1\n\n[[peer]]\nn = 2\n")
+                        (editing "[[peer]]\nn = 1\n\n[[peer]]\nn = 2\n"
+                            (Edit.setTableComments [ "peer" ]
+                                { blankBefore = True
+                                , leading = [ " Everyone we talk to." ]
+                                , trailing = Nothing
+                                }
+                            )
+                        )
+                    )
+            , U.test "a table with no header line has nothing to read and nothing to write on" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        { read = { blankBefore = False, leading = [], trailing = Nothing }
+                        , written = Ok "a.b = 1\n"
+                        }
+                        { read =
+                            Toml.parse "a.b = 1\n"
+                                |> Result.map (Edit.tableComments [ "a" ])
+                                |> Result.withDefault { blankBefore = True, leading = [ "?" ], trailing = Nothing }
+                        , written =
+                            editing "a.b = 1\n"
+                                (Edit.setTableComments [ "a" ]
+                                    { blankBefore = False, leading = [ " nope" ], trailing = Nothing }
+                                )
+                        }
+                    )
+            , U.test "a nested header directly under its parent may have its blank line, unlike a key" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok "[a]\n\n[a.b]\n")
+                        (editing "[a]\n[a.b]\n"
+                            (Edit.setTableComments [ "a", "b" ]
+                                { blankBefore = True, leading = [], trailing = Nothing }
+                            )
+                        )
+                    )
             -- THE BLANK LINE ABOVE A COMMENT BLOCK
+            , U.test "the first key of a file has no blank line above it" <| \_ ->
+                -- Array.get -1 is the last element in Gren, and the last
+                -- expression of a file that ends with a newline is blank.
+                Task.succeed
+                    (Expect.equal (Ok False)
+                        (Toml.parse "a = 1\n"
+                            |> Result.mapError Toml.errorToString
+                            |> Result.map (\document -> (Edit.comments [ "a" ] document).blankBefore)
+                        )
+                    )
             , U.test "blankBefore puts an empty line above the block" <| \_ ->
                 Task.succeed
                     (Expect.equal
@@ -839,6 +931,38 @@ editingSuite =
                             |> Toml.toString
                         )
                     )
+            , U.test "and the file it writes is the file Encode writes for the same shape" <| \_ ->
+                -- The two modules decide their blank lines in different
+                -- places -- `tidyBlanks` there, `spacedTo` here -- and this is
+                -- what keeps them deciding the same thing.
+                let
+                    explained text =
+                        { blankBefore = True, leading = [ text ], trailing = Nothing }
+
+                    edited =
+                        Toml.empty
+                            |> Edit.introduce [ "theme" ] (explained " Scheme.") (Edit.string "dark")
+                            |> Edit.introduce [ "server", "port" ] (explained " Port.") (Edit.int 1)
+                            |> Edit.introduce [ "server", "host" ] (explained " Host.") (Edit.string "h")
+                            |> Edit.setTableComments [ "server" ] (explained " Where to reach it.")
+                            |> Toml.toString
+
+                    encoded =
+                        Encode.toString
+                            [ Encode.field "theme" (Encode.string "dark")
+                                |> Encode.commented { leading = [ " Scheme." ], trailing = Nothing }
+                            , Encode.field "server"
+                                (Encode.table
+                                    [ Encode.field "port" (Encode.int 1)
+                                        |> Encode.commented { leading = [ " Port." ], trailing = Nothing }
+                                    , Encode.field "host" (Encode.string "h")
+                                        |> Encode.commented { leading = [ " Host." ], trailing = Nothing }
+                                    ]
+                                )
+                                |> Encode.commented { leading = [ " Where to reach it." ], trailing = Nothing }
+                            ]
+                in
+                Task.succeed (Expect.equal encoded edited)
             , U.test "an empty file parses to Toml.empty, so first run and empty file are one case" <| \_ ->
                 Task.succeed
                     (Expect.equal (Ok Toml.empty)

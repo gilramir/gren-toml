@@ -37,7 +37,7 @@ Everything runs inside devbox; `gren` and node 22 are not on `PATH` otherwise.
 ```sh
 devbox run build    # compile the package
 devbox run docs     # check the doc comments parse
-devbox run test     # tests/run.sh: 177 checks, 714 of them corpus files, ~0.9s
+devbox run test     # tests/run.sh: 186 checks, 714 of them corpus files, ~0.9s
 devbox run gen      # regenerate the two generated test fixtures
 
 devbox run conformance   # toml-test/: the official runner. Needs Go and,
@@ -108,7 +108,11 @@ Two more rules of `Toml.Edit` that are easy to lose:
   fallback `append` is only for a file with no headers at all, or for a key
   that brings its own header with it.
 - **A path into an array of tables means the last item**, for reading and
-  writing alike. `indexOf` takes the last match for exactly this reason.
+  writing alike. `indexOf` takes the last match for exactly this reason. The one
+  exception is a header's own comments: `tableComments` and `setTableComments`
+  mean the *first* `[[header]]`, because that block explains the key and it is
+  where `Toml.Encode.commented` writes it. `headerIndexOf` is a separate function
+  from `indexOf` so the two choices cannot leak into each other.
 
 ## Parse errors are chosen, not taken
 
@@ -152,6 +156,11 @@ for `introduce` on a first run, where every key asks for a blank above its
 explanation and the first key of each new table would otherwise land under an
 empty line. `comments` and `setComments` stay inverses either way, since a file
 that already has the blank still reads as `True` and writes back unchanged.
+The rule is for *keys*: `spacedTo` takes an `Owner`, and for `ATable` the blank
+under a parent header is honoured, because a nested header under its parent is
+two sections meeting and Encode keeps that one. The Editing suite has a test
+that builds the same file through `introduce` and through `Encode` and compares
+the two strings, which is what stops the two modules' blank-line rules drifting.
 
 `Toml.Encode` puts its blank lines in unconditionally and takes the useless ones
 out again in `tidyBlanks`, because neither the header writer nor the comment
@@ -164,7 +173,10 @@ header and still wants the blank.
 
 **`Array.get -1` in Gren is the last element.** `separatesAnything` guards
 `index <= 0` for exactly that reason, and the failing test looked like a stray
-blank line at the top of the file rather than like an off-by-one.
+blank line at the top of the file rather than like an off-by-one. `Toml.Edit`'s
+`isBlank` guards `index < 0` for the same reason: without it `comments` on the
+first key of a file said there was a blank line above it, because the expression
+after the final newline is one.
 
 ## Toml.Encode's two rules that look cosmetic and are not
 

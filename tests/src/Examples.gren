@@ -531,6 +531,18 @@ examplesSuite =
                             )
                         )
                     )
+            , U.test "Edit: setTableComments explains a section" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expecting
+                            [ { old = "[servers.alpha]", new = "# The primary.\n[servers.alpha]" } ]
+                        )
+                        (edit
+                            (Edit.setTableComments [ "servers", "alpha" ]
+                                { blankBefore = True, leading = [ " The primary." ], trailing = Nothing }
+                            )
+                        )
+                    )
             , U.test "Edit: introduce explains the key it invents" <| \_ ->
                 Task.succeed
                     (Expect.equal

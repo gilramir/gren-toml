@@ -88,6 +88,13 @@ program keeping a config file wants: every key it invents arrives with a
 sentence saying what it is for, and the user who deletes that sentence, or
 rewrites it in their own language, does not get corrected on the next save.
 
+`tableComments` and `setTableComments` do the same for a `[header]` line, which
+owns the block above it the way a key does -- `removeTable` already took it with
+the table, and now it can be read and written. For an array of tables that is
+the *first* `[[header]]`, where `Toml.Encode` puts them, because the block
+explains the key rather than one item; it is the one path in the module that
+does not mean the last item.
+
 ## Writing one that may not exist yet
 
 `Toml.empty` is a document with nothing in it. Every key is missing from it and
@@ -242,7 +249,7 @@ reward for being valid.
 ## Tests
 
 ```sh
-devbox run test          # 177 checks, ~0.9s, no network
+devbox run test          # 186 checks, ~0.9s, no network
 devbox run conformance   # the official toml-test runner; needs Go
 ```
 
@@ -268,7 +275,7 @@ RoundTrip: setUpSuite: ENOENT: no such file or directory,
 Semantics: setUpSuite: ...
 Values:    setUpSuite: ...
 
-FAILED — 169 passed, 0 failed, 11 errored
+FAILED — 178 passed, 0 failed, 11 errored
 ```
 
 `0 failed, 11 errored` is the signature: nothing is wrong with the library,
