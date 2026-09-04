@@ -232,12 +232,20 @@ way to do that is not to handle it: [`Toml.empty`](Toml#empty) is a document
 with nothing in it, every key is missing from it, and [`set`](#set) adds a key
 that is missing. So
 
-    Toml.parseBytes bytes
-        |> Result.withDefault Toml.empty
-        |> Toml.Edit.introduce [ "theme" ] note (Toml.Edit.string "dark")
+    (when found is
+        Nothing ->
+            Ok Toml.empty
+
+        Just bytes ->
+            Toml.parseBytes bytes
+    )
+        |> Result.map (Toml.Edit.introduce [ "theme" ] note (Toml.Edit.string "dark"))
 
 creates the file and updates it with the same code, and there is no second
-description of the file's shape to drift out of step with the first.
+description of the file's shape to drift out of step with the first. The
+`when` is not decoration: `Toml.empty` stands in for a file that is *not there*,
+and a file that is there and fails to parse has to stay an `Err`, or the next
+save writes an empty document over it -- see [`Toml.empty`](Toml#empty).
 
 [`Toml.Encode`](Toml-Encode) is the other way to build a file from nothing, and
 it is the better one when the shape of the file comes from the shape of the
@@ -336,8 +344,9 @@ module's to choose.
 than left to whoever is writing the file because there is no other way to ask
 for one -- a document has no lines to insert, only expressions -- and because a
 comment block hard against the line above it reads as a continuation of that
-line. At the very top of a document it is always `False`: a file does not begin
-with a blank line.
+line. It is always `False` at the very top of a document, where a file does not
+begin with a blank line, and for the first key directly under its `[header]`,
+which belongs against the header rather than held off it.
 
 -}
 type alias Comments =
@@ -455,6 +464,16 @@ ownComment expression =
             Nothing
 
 
+isHeader : Int -> Array Expression -> Bool
+isHeader index expressions =
+    when Maybe.map .content (Array.get index expressions) is
+        Just (Header _) ->
+            True
+
+        _ ->
+            False
+
+
 {-| Whether the expression at `index` is an empty line with no comment on it.
 
 `False` for an index off either end, which is what makes the top of the file
@@ -499,8 +518,11 @@ the key's and is left alone, which is the same blank line that protects it from
 [`remove`](#remove). A key that is not there is left alone too.
 
 `blankBefore = True` puts a blank line above the block if there is not one
-already, and `False` takes one away if there is. Both are no-ops at the top of
-the document, where there is no line above to be blank. Taking one away is the
+already, and `False` takes one away if there is. Asking for one does nothing at
+the top of the document, where there is no line above to be blank, and does
+nothing directly under a `[header]`, where the key is the first of its table and
+a blank would hold it off the header it belongs to -- the same rule
+[`Toml.Encode`](Toml-Encode) writes by. Taking one away is the
 one thing here that reaches past the key's own lines, so it is worth knowing
 what it does: the blank line is what separates a floating comment from an owned
 one, and removing it makes the block above join this key's -- which is to say
@@ -551,15 +573,19 @@ setComments path wanted document =
 {-| Everything above a key's comment block, with a blank line at the end of it
 or without one, as asked.
 
-Nothing happens for an empty array: the block is at the top of the document and
-there is no line above it to be blank.
+A blank is not added in two places. At the top of the document there is no
+line above to be blank. Directly under a `[header]` there is one, but the key
+is the first of its table and a blank there would push it away from the header
+it belongs to -- the same rule [`Toml.Encode`](Toml-Encode) writes by, and the
+case [`introduce`](#introduce) lands in every time it is the call that brought
+the header with it. Taking a blank away works in both places.
 
 -}
 spacedTo : Bool -> Newline -> Array Expression -> Array Expression
 spacedTo wanted newline before =
     when { wanted = wanted, has = isBlank (Array.length before - 1) before } is
         { wanted = True, has = False } ->
-            if Array.length before == 0 then
+            if Array.length before == 0 || isHeader (Array.length before - 1) before then
                 before
 
             else

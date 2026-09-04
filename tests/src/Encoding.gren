@@ -373,6 +373,54 @@ encodingSuite =
                             ]
                         )
                     )
+            , U.test "and its trailing comment is on the first header alone, for the same reason" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (lines
+                            [ "[[peer]] # everyone we talk to"
+                            , "name = \"alpha\""
+                            , ""
+                            , "[[peer]]"
+                            , "name = \"beta\""
+                            , ""
+                            ]
+                        )
+                        (Encode.toString
+                            [ field "peer"
+                                (Encode.tableArray
+                                    [ [ field "name" (Encode.string "alpha") ]
+                                    , [ field "name" (Encode.string "beta") ]
+                                    ]
+                                )
+                                |> Encode.commented
+                                    { leading = [], trailing = Just " everyone we talk to" }
+                            ]
+                        )
+                    )
+            , U.test "a commented nested header keeps the blank line that separates two sections" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (lines
+                            [ "[servers]"
+                            , ""
+                            , "# The first one."
+                            , "[servers.alpha]"
+                            , "ip = \"10.0.0.1\""
+                            , ""
+                            ]
+                        )
+                        (Encode.toString
+                            [ field "servers"
+                                (Encode.table
+                                    [ field "alpha"
+                                        (Encode.table [ field "ip" (Encode.string "10.0.0.1") ])
+                                        |> Encode.commented
+                                            { leading = [ " The first one." ], trailing = Nothing }
+                                    ]
+                                )
+                            ]
+                        )
+                    )
             , U.test "the first key under a header is not pushed away from it" <| \_ ->
                 Task.succeed
                     (Expect.equal

@@ -288,9 +288,9 @@ reading one.
 
 **On a field whose value is a [`table`](#table) or a
 [`tableArray`](#tableArray)**, the comments go with the `[header]` line, since
-that is the line the field became. On a `tableArray` they go above the first
-`[[header]]` only -- they explain the key, and repeating them over every item
-would explain nothing.
+that is the line the field became. On a `tableArray` they go with the first
+`[[header]]` only, the block above it and the trailing comment beside it -- they
+explain the key, and repeating them over every item would explain nothing.
 
 **On a field inside an [`array`](#array) or an
 [`inlineTable`](#inlineTable)** they are dropped, because there is no line for
@@ -331,7 +331,8 @@ and the ones with nothing to separate come out again here:
     would push the key away from the header it belongs to. Not between a header
     and a *nested* header, which is two sections meeting and wants the space --
     which is why this looks at what follows the blank as well as at what
-    precedes it.
+    precedes it, and looks past a comment block to do it, since a nested header
+    with an explanation over it is still a nested header.
 
 -}
 tidyBlanks : Array Expression -> Array Expression
@@ -372,7 +373,7 @@ separatesAnything index expressions =
         Just previous ->
             when previous.content is
                 Header _ ->
-                    when Maybe.map .content (Array.get (index + 1) expressions) is
+                    when Maybe.map .content (afterCommentBlock (index + 1) expressions) is
                         Just (Header _) ->
                             True
 
@@ -381,6 +382,32 @@ separatesAnything index expressions =
 
                 _ ->
                     not (isPlainBlank previous)
+
+
+{-| The first expression at or after `index` that is not an own-line comment.
+
+A nested header with a comment block over it is still a nested header, and the
+blank that separates it from the header above is still wanted. Looking only at
+the line after the blank would see the comment and take the blank out.
+
+-}
+afterCommentBlock : Int -> Array Expression -> Maybe Expression
+afterCommentBlock index expressions =
+    when Array.get index expressions is
+        Just expression ->
+            when expression.content is
+                Empty { comment } ->
+                    if comment == Nothing then
+                        Just expression
+
+                    else
+                        afterCommentBlock (index + 1) expressions
+
+                _ ->
+                    Just expression
+
+        Nothing ->
+            Nothing
 
 
 isPlainBlank : Expression -> Bool
@@ -562,7 +589,17 @@ header path it =
                             [ blank ]
                         )
                         (Array.prepend
-                            [ line (headerLine ArrayOfTables here it.comments.trailing) ]
+                            [ line
+                                (headerLine ArrayOfTables
+                                    here
+                                    (if index == 0 then
+                                        it.comments.trailing
+
+                                     else
+                                        Nothing
+                                    )
+                                )
+                            ]
                             (section here fields)
                         )
                 )

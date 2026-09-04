@@ -700,6 +700,18 @@ editingSuite =
                             )
                         )
                     )
+            , U.test "nor directly under a header, where the key belongs against it" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok "[server]\n# The one to listen on.\nport = 1\n")
+                        (editing "[server]\nport = 1\n"
+                            (Edit.setComments [ "server", "port" ]
+                                { blankBefore = True
+                                , leading = [ " The one to listen on." ]
+                                , trailing = Nothing
+                                }
+                            )
+                        )
+                    )
             -- INTRODUCE
             , U.test "introduce explains a key it is the one to invent" <| \_ ->
                 Task.succeed
@@ -795,6 +807,42 @@ editingSuite =
                                 (Edit.string "gren")
                             )
                         )
+                    )
+            , U.test "a key that brings its own header is not held off it by its blank line" <| \_ ->
+                -- The first run of a config program is exactly this: every
+                -- key asks for a blank above its explanation, and the first
+                -- key of each new table would otherwise land under an empty
+                -- line -- `[server]`, blank, comment, key.
+                let
+                    explained text =
+                        { blankBefore = True, leading = [ text ], trailing = Nothing }
+                in
+                Task.succeed
+                    (Expect.equal
+                        (String.join "\n"
+                            [ "# Scheme."
+                            , "theme = \"dark\""
+                            , ""
+                            , "[server]"
+                            , "# Port."
+                            , "port = 1"
+                            , ""
+                            , "# Host."
+                            , "host = \"h\""
+                            , ""
+                            ]
+                        )
+                        (Toml.empty
+                            |> Edit.introduce [ "theme" ] (explained " Scheme.") (Edit.string "dark")
+                            |> Edit.introduce [ "server", "port" ] (explained " Port.") (Edit.int 1)
+                            |> Edit.introduce [ "server", "host" ] (explained " Host.") (Edit.string "h")
+                            |> Toml.toString
+                        )
+                    )
+            , U.test "an empty file parses to Toml.empty, so first run and empty file are one case" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok Toml.empty)
+                        (Toml.parse "" |> Result.mapError Toml.errorToString)
                     )
             -- RENAMING
             , U.test "renaming a key changes the name and nothing else on the line" <| \_ ->

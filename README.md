@@ -95,15 +95,25 @@ rewrites it in their own language, does not get corrected on the next save.
 same code:
 
 ```gren
-Toml.parseBytes bytes
-    |> Result.withDefault Toml.empty
-    |> Toml.Edit.introduce [ "theme" ] note (Toml.Edit.string "dark")
-    |> Toml.toBytes
+(when found is
+    Nothing ->
+        Ok Toml.empty
+
+    Just bytes ->
+        Toml.parseBytes bytes
+)
+    |> Result.map (Toml.Edit.introduce [ "theme" ] note (Toml.Edit.string "dark"))
+    |> Result.map Toml.toBytes
 ```
 
 Without it a program needs a second path that writes the file from scratch,
 which is a second place to keep the shape of the file and the first place for
 the two to disagree.
+
+`Toml.empty` is for a file that is not there. A file that is there and fails to
+parse must stay an `Err` -- `Result.withDefault Toml.empty` would turn a typo in
+the user's config into an empty document and write it back over their file on
+the next save.
 
 ## Writing one from scratch
 
@@ -232,7 +242,7 @@ reward for being valid.
 ## Tests
 
 ```sh
-devbox run test          # 172 checks, ~0.9s, no network
+devbox run test          # 177 checks, ~0.9s, no network
 devbox run conformance   # the official toml-test runner; needs Go
 ```
 
@@ -258,7 +268,7 @@ RoundTrip: setUpSuite: ENOENT: no such file or directory,
 Semantics: setUpSuite: ...
 Values:    setUpSuite: ...
 
-FAILED — 164 passed, 0 failed, 11 errored
+FAILED — 169 passed, 0 failed, 11 errored
 ```
 
 `0 failed, 11 errored` is the signature: nothing is wrong with the library,

@@ -112,16 +112,29 @@ type alias Document =
 This exists for one situation, and it is the situation a program that keeps a
 config file is in every time it saves: **the file may not be there yet.**
 
-    read path
-        |> Task.map (\bytes -> Toml.parseBytes bytes |> Result.withDefault Toml.empty)
-        |> Task.onError (\_ -> Task.succeed Toml.empty)
-        |> Task.map (Toml.Edit.set [ "theme" ] (Toml.Edit.string "dark"))
+    when found is
+        Nothing ->
+            -- No file. The first run.
+            Ok Toml.empty
+
+        Just bytes ->
+            Toml.parseBytes bytes
+
+    |> Result.map (Toml.Edit.set [ "theme" ] (Toml.Edit.string "dark"))
 
 With it, creating the file and changing one value in it are the same code --
 [`Toml.Edit.set`](Toml-Edit#set) adds a key that is not there, and every key is
 missing from an empty document. Without it a program needs a second path that
 writes the file from scratch, which is a second place to keep the shape of the
 file and the first place for the two to drift apart.
+
+**A file that is there and will not parse is not this.** It is tempting to write
+`Toml.parseBytes bytes |> Result.withDefault Toml.empty` and be done with both
+cases at once, and it is the one thing not to write: a config file with a typo
+in it would parse to `Err`, become the empty document, and be written back over
+the user's file, comments and all, on the next save. `empty` is for a file that
+does not exist. A file that exists and cannot be read is an error to show the
+user, and the save has to not happen.
 
 `Toml.toString empty` is `""`, and a value set into it lands on line one with
 no leading blank.

@@ -37,7 +37,7 @@ Everything runs inside devbox; `gren` and node 22 are not on `PATH` otherwise.
 ```sh
 devbox run build    # compile the package
 devbox run docs     # check the doc comments parse
-devbox run test     # tests/run.sh: 172 checks, 714 of them corpus files, ~0.9s
+devbox run test     # tests/run.sh: 177 checks, 714 of them corpus files, ~0.9s
 devbox run gen      # regenerate the two generated test fixtures
 
 devbox run conformance   # toml-test/: the official runner. Needs Go and,
@@ -145,12 +145,22 @@ file with no author, so the spacing is the module's, and `Toml.Encode`'s style
 section already says nobody gets to change it. Do not "fix" the asymmetry by
 adding the field to `Encode`.
 
+The one rule the two share: **no blank line between a `[header]` and the first
+key of its own table.** `Encode` takes it out in `tidyBlanks`; `Edit.spacedTo`
+never puts it in, even when `blankBefore = True` asks. That second half exists
+for `introduce` on a first run, where every key asks for a blank above its
+explanation and the first key of each new table would otherwise land under an
+empty line. `comments` and `setComments` stay inverses either way, since a file
+that already has the blank still reads as `True` and writes back unchanged.
+
 `Toml.Encode` puts its blank lines in unconditionally and takes the useless ones
 out again in `tidyBlanks`, because neither the header writer nor the comment
 writer can see what is around it. Two of them come out: the one at the top of
 the file, and the one between a `[header]` and the first key of its own table --
 but *not* the one between a header and a nested header, which is why that
-function looks forwards as well as back.
+function looks forwards as well as back -- and looks *past* a comment block when
+it does, since a nested header with an explanation over it is still a nested
+header and still wants the blank.
 
 **`Array.get -1` in Gren is the last element.** `separatesAnything` guards
 `index <= 0` for exactly that reason, and the failing test looked like a stray
