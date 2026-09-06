@@ -37,7 +37,7 @@ Everything runs inside devbox; `gren` and node 22 are not on `PATH` otherwise.
 ```sh
 devbox run build    # compile the package
 devbox run docs     # check the doc comments parse
-devbox run test     # tests/run.sh: 241 checks, 714 of them corpus files, ~1.1s
+devbox run test     # tests/run.sh: 266 checks, 714 of them corpus files, ~1.1s
 devbox run gen      # regenerate the two generated test fixtures
 
 devbox run conformance   # toml-test/: the official runner. Needs Go and,
@@ -101,12 +101,22 @@ Both were caught by the editing suite comparing whole files rather than the
 value that changed. Keep it that way: "the edit was wrong" is not the failure
 mode this package has, "everything else moved" is.
 
-Two more rules of `Toml.Edit` that are easy to lose:
+Three more rules of `Toml.Edit` that are easy to lose:
 
 - **A top-level key never goes after a header.** `insert` puts it after the
   last top-level key, and when there is none, *before* the first header. The
   fallback `append` is only for a file with no headers at all, or for a key
   that brings its own header with it.
+- **`remove` takes the blank line above the block**, but only when what is left
+  below it is blank too, or is the end of the file. `closesUp` is the whole
+  rule. It is what makes `remove` the inverse of `introduce`, whose
+  `blankBefore` wrote that line; without it a setting turned on and off again
+  left an empty line behind on every cycle. The other half of the condition is
+  not tidiness: a blank line with something above it and something below it is
+  the separator between the two, and taking it can hand a floating comment
+  block to whatever follows. `removeTable` needs none of this -- a table's own
+  trailing blank line is inside it and goes with it, and at the end of a file
+  `endedLike` absorbs the one above into the final newline.
 - **A path into an array of tables means the last item**, for reading and
   writing alike. `indexOf` takes the last match for exactly this reason. The one
   exception is a header's own comments: `tableComments` and `setTableComments`
@@ -181,9 +191,10 @@ fail where it was written; it makes a document that fails later, in
 
 ## An array element's comment is not stored where it looks like it is
 
-`appendTo`, `setAt` and `removeAt` change one element and leave the rest of the
-array's text alone. Two details of the AST decide whether that works, and in
-both the text is stored somewhere other than under the element it belongs to:
+`appendTo`, `insertAt`, `setAt`, `removeAt` and `moveAt` change one element and
+leave the rest of the array's text alone. Two details of the AST decide whether
+that works, and in both the text is stored somewhere other than under the
+element it belongs to:
 
 - the comment written after an element's comma is stored in the **next**
   element's `before`, and for the last element in the array's `trailing`;
@@ -211,6 +222,37 @@ its own.
 
 **`Array.get -1` in Gren is the last element**, so `elementAt` guards
 `index < 0`. Without it, `setAt path -1` would quietly change the last element.
+
+## A move carries the comment, not the line
+
+`moveAt` is `removedFrom` then `insertedAt`, which between them already know
+where a line, a comma and a closing bracket are kept. What they cannot do is
+the note, so `movedIn` reads it with `noteAfter` before the element leaves and
+writes it with `withNoteAfter` after it lands. Neither of those looks at a
+whole boundary: **a `Note` is the comment and the spaces that held it off the
+value, and nothing else.** Moving the first line of the boundary instead --
+which is what the convention above would suggest -- moves its `Break` along
+with it, so reordering an array that puts two elements on one line would
+scramble the lines rather than the values. Keeping it to the comment means an
+array with no comments in it is reordered by permuting the values and touching
+nothing else at all.
+
+The cost of that choice is the one refusal in the module: an element with a
+note cannot move onto a line another element also ends, because a comment
+inside an array has to be followed by a newline and there is none to spare.
+`placeNote` returns `Nothing`, and `moveAt` gives the document back unchanged
+rather than dropping the note or leaving it against a value nobody wrote it
+for. Both are worse: a note is data the user typed, and a note against the
+wrong value is a lie the file now tells.
+
+`insertAt` is where the *other* half of a boundary matters. The displaced
+element's separator normally comes from where it is going -- `closingOf` of its
+own `before`, which is that separator with any note taken out, since the note
+belongs to the line above and the new element is on that line now. Index 0 is
+the exception: the trivia in front of the first element is whatever follows the
+`[`, and in `[1, 2]` that is nothing at all, so `separatorFor` takes the
+separator from in front of the element *after* it instead. Without that,
+`insertAt 0` on a flat array writes `[9,1, 2]`.
 
 ## Comments come in two shapes, and that is deliberate
 

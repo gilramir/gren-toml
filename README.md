@@ -428,11 +428,11 @@ how to change something *inside* one, because a path stops at the brace: an
 inline table has no lines to insert into, so the boundary is drawn there rather
 than guessed at.
 
-`appendTo`, `setAt` and `removeAt` fill the gap that comparison leaves. It
-protects a hand-arranged array until the array actually changes, and at that
-point `set` has a new array to write and no old formatting to keep. These three
-change one element and leave the line breaks, the indentation and the comments
-of the others as they were:
+`appendTo`, `insertAt`, `setAt`, `removeAt` and `moveAt` fill the gap that
+comparison leaves. It protects a hand-arranged array until the array actually
+changes, and at that point `set` has a new array to write and no old formatting
+to keep. These five change one element and leave the line breaks, the
+indentation and the comments of the others as they were:
 
 ```gren
 Toml.Edit.appendTo [ "zones" ] (Toml.Edit.string "Europe/Oslo")
@@ -453,6 +453,12 @@ comma if the last element had one, and no comma if it did not. A key that is
 not there yet becomes a one-element array, so "add this to my list" is the same
 code whether or not the file has the list already.
 
+`insertAt` puts one anywhere in the list rather than on the end. The new
+element takes the line of the one it displaces, and that one moves down with
+the same indent; the note above them stays on the line it was written on, and
+the new element has none of its own, since a note is written against a value
+and this value is new.
+
 `setAt` compares before it writes, the way `set` does, and `respellAt` writes
 anyway. They are the same pair as `set` and `respell`, for one element instead
 of the whole key.
@@ -463,6 +469,28 @@ an element's comma, up to the end of that line, belongs to that element**, and
 everything after that line ending is the next element's indent. `setAt` and
 `removeAt` both take an index, and a negative one is out of range rather than
 counted from the end.
+
+`moveAt` is the one a **Move Up** button needs, and it exists because the other
+four cannot be assembled into it. A `removeAt` and an `insertAt` lose the note,
+each of them correctly: the first takes it away with the element and the second
+writes an element that has none. Walking the new order down the list with
+`setAt` keeps every note but keeps it against the *position*, so the move
+leaves `# me` written against somebody else's city — silently, which is worse
+than losing it. `moveAt` takes the value and its note together, and the indent
+and the comma are the destination's, since those describe a place in the list
+rather than the thing in it:
+
+```gren
+Toml.Edit.moveAt [ "zones" ] 1 0
+```
+
+```toml
+# Time zones, in the order they are shown.
+zones = [
+  "America/Chicago", # me
+  "Asia/Seoul",      # them
+]
+```
 
 A path into an array of tables names its last item, which is the item TOML
 itself means by `[peer.tls]` or `peer.x = 1` after the second `[[peer]]`.
@@ -491,6 +519,14 @@ those are is a convention, since TOML does not say, and it is this one:
 The blank line is the escape hatch, and it is worth knowing about: a comment
 block that introduces a whole section rather than the one key beneath it should
 have a blank line under it, or deleting that key will take the heading too.
+
+The blank line *above* the block goes with the key as well, but only when the
+block leaves a blank line or the end of the file below it. That is what makes
+`remove` the inverse of `introduce`: a program that writes a key when a setting
+is on and takes it out when the setting goes back to its default would
+otherwise leave one empty line behind on every cycle. A block with a blank line
+on one side only keeps it, since that one separates what is above the key from
+what is below, and both of those are staying.
 
 `setComments` writes back what `comments` reads, in the same shape, so the two
 are inverses. Adding a trailing comment to a line that had none puts a space in

@@ -135,6 +135,25 @@ withoutLineAfter anchor lines =
         |> Array.mapAndKeepJust identity
 
 
+{-| The fixture with two of its lines exchanged, which is what a move looks
+like from outside the file.
+-}
+swapLines : String -> String -> Array String -> Array String
+swapLines one other lines =
+    Array.map
+        (\line ->
+            if line == one then
+                other
+
+            else if line == other then
+                one
+
+            else
+                line
+        )
+        lines
+
+
 beforeLine : String -> String -> Array String -> Array String
 beforeLine anchor added lines =
     Array.mapAndFlatten
@@ -156,6 +175,19 @@ editing text change =
     Toml.parse text
         |> Result.mapError Toml.errorToString
         |> Result.map (change >> Toml.toString)
+
+
+{-| Write a key with an explanation above it, then take it out again: the two
+calls a program makes when a setting is turned on and then put back to its
+default. It has to be the identity on the file, however many times it is run.
+-}
+cycle : Bool -> Toml.Document -> Toml.Document
+cycle blankBefore document =
+    document
+        |> Edit.introduce [ "b" ]
+            { blankBefore = blankBefore, leading = [ " why" ], trailing = Nothing }
+            (Edit.string "x")
+        |> Edit.remove [ "b" ]
 
 
 intValue : Table.Value -> Maybe Int
@@ -368,6 +400,9 @@ editingSuite =
                     )
             -- REMOVING A KEY, AND ITS COMMENTS
             , U.test "removing a key takes the comment block above it" <| \_ ->
+                -- And the blank line above the block, since there is another
+                -- one below it: two empty lines around a block that goes are
+                -- one empty line once it has gone.
                 Task.succeed
                     (Expect.equal
                         (expecting
@@ -376,6 +411,7 @@ editingSuite =
                                 , "# Seconds, not milliseconds."
                                 , "timeout = 30"
                                 ]
+                                >> withoutLineAfter "retries = 3"
                             )
                         )
                         (edit (Edit.remove [ "timeout" ]))
@@ -395,6 +431,54 @@ editingSuite =
             , U.test "removing a key that is not there changes nothing" <| \_ ->
                 Task.succeed
                     (Expect.equal (Ok source) (edit (Edit.remove [ "nope" ])))
+            -- WHAT INTRODUCE WROTE, REMOVE TAKES BACK
+            , U.test "writing a key with a blank line above it and taking it out again is the identity" <| \_ ->
+                -- The cycle a program runs when a setting goes back to its
+                -- default. If the blank line stays behind, the file grows an
+                -- empty line every time the setting is turned off.
+                Task.succeed
+                    (Expect.equal
+                        { once = Ok "a = 1\n", thrice = Ok "a = 1\n" }
+                        { once = editing "a = 1\n" (cycle True)
+                        , thrice = editing "a = 1\n" (cycle True >> cycle True >> cycle True)
+                        }
+                    )
+            , U.test "and so is the same cycle with no blank line asked for" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        { once = Ok "a = 1\n", thrice = Ok "a = 1\n" }
+                        { once = editing "a = 1\n" (cycle False)
+                        , thrice = editing "a = 1\n" (cycle False >> cycle False >> cycle False)
+                        }
+                    )
+            , U.test "a floating comment is left where it was by both halves of it" <| \_ ->
+                let
+                    floating =
+                        "a = 1\n\n# a note of my own, floating\n"
+                in
+                Task.succeed
+                    (Expect.equal (Ok floating) (editing floating (cycle True)))
+            , U.test "and removing a key under one takes no comment of anybody's" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok "a = 1\n\n# a note of my own, floating\n")
+                        (editing "a = 1\n\n# a note of my own, floating\n\n# why\nb = \"x\"\n"
+                            (Edit.remove [ "b" ])
+                        )
+                    )
+            , U.test "the blank line that keeps a comment floating stays when a key follows" <| \_ ->
+                -- Here the blank line above the block is the only thing saying
+                -- the note is nobody's. Taking it would hand it to `c`.
+                Task.succeed
+                    (Expect.equal (Ok "a = 1\n\n# floating\n\nc = 2\n")
+                        (editing "a = 1\n\n# floating\n\n# why\nb = \"x\"\nc = 2\n"
+                            (Edit.remove [ "b" ])
+                        )
+                    )
+            , U.test "and so does a blank line that is the only separator left" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok "a = 1\n\nc = 3\n")
+                        (editing "a = 1\n\nb = 2\nc = 3\n" (Edit.remove [ "b" ]))
+                    )
             -- THE BLANK LINE IS THE ESCAPE HATCH
             , U.test "a comment block with a blank line above it survives" <| \_ ->
                 Task.succeed
@@ -1256,6 +1340,165 @@ editingSuite =
                     (Expect.equal
                         (expectingList (replaceLine "  2" "  2,\n  3"))
                         (editList (Edit.appendTo [ "bare" ] (Edit.int 3)))
+                    )
+            -- PUTTING ONE IN THE MIDDLE
+            , U.test "inserting takes the line of the element it displaces" <| \_ ->
+                -- And the note above it stays where it is, which is why the
+                -- whole file is what this compares.
+                Task.succeed
+                    (Expect.equal
+                        (expectingList
+                            (beforeLine "  \"America/Chicago\", # me" "  \"Europe/Oslo\",")
+                        )
+                        (editList (Edit.insertAt [ "zones" ] 1 (Edit.string "Europe/Oslo")))
+                    )
+            , U.test "inserting at the front pushes the first element down a line" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expectingList
+                            (beforeLine "  \"Asia/Seoul\",      # them" "  \"Europe/Oslo\",")
+                        )
+                        (editList (Edit.insertAt [ "zones" ] 0 (Edit.string "Europe/Oslo")))
+                    )
+            , U.test "an array on one line keeps the separator it writes between elements" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        { atTheFront = expectingList (replaceLine "flat = [1, 2, 3]" "flat = [0, 1, 2, 3]")
+                        , inTheMiddle = expectingList (replaceLine "flat = [1, 2, 3]" "flat = [1, 2, 9, 3]")
+                        }
+                        { atTheFront = editList (Edit.insertAt [ "flat" ] 0 (Edit.int 0))
+                        , inTheMiddle = editList (Edit.insertAt [ "flat" ] 2 (Edit.int 9))
+                        }
+                    )
+            , U.test "a hanging bracket keeps its column when a line is added to it" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expectingList (beforeLine "           2," "           9,"))
+                        (editList (Edit.insertAt [ "hanging" ] 1 (Edit.int 9)))
+                    )
+            , U.test "an index equal to the length is an append" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (editList (Edit.appendTo [ "zones" ] (Edit.string "Europe/Oslo")))
+                        (editList (Edit.insertAt [ "zones" ] 2 (Edit.string "Europe/Oslo")))
+                    )
+            , U.test "an index past the end has no line to take, and neither has a negative one" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        { past = Ok lists, negative = Ok lists }
+                        { past = editList (Edit.insertAt [ "zones" ] 3 (Edit.string "Europe/Oslo"))
+                        , negative = editList (Edit.insertAt [ "flat" ] -1 (Edit.int 0))
+                        }
+                    )
+            , U.test "a key that is not there yet becomes a one-element array at 0 and nothing anywhere else" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        { atZero = expectingList (afterLine "notAList = 3" "brand = [1]")
+                        , atOne = Ok lists
+                        }
+                        { atZero = editList (Edit.insertAt [ "brand" ] 0 (Edit.int 1))
+                        , atOne = editList (Edit.insertAt [ "brand" ] 1 (Edit.int 1))
+                        }
+                    )
+            -- MOVING ONE TAKES ITS NOTE ALONG
+            , U.test "moving an element writes its note against it in its new place" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expectingList
+                            (swapLines "  \"Asia/Seoul\",      # them"
+                                "  \"America/Chicago\", # me"
+                            )
+                        )
+                        (editList (Edit.moveAt [ "zones" ] 1 0))
+                    )
+            , U.test "and what it wrote is the same list in the new order" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok [ "America/Chicago", "Asia/Seoul" ])
+                        (editList (Edit.moveAt [ "zones" ] 1 0)
+                            |> Result.andThen
+                                (\written ->
+                                    Decode.fromString
+                                        (Decode.field "zones" (Decode.array Decode.string))
+                                        written
+                                        |> Result.mapError Decode.errorToString
+                                )
+                        )
+                    )
+            , U.test "and moving it back is the file it started as" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok lists)
+                        (editList (Edit.moveAt [ "zones" ] 1 0 >> Edit.moveAt [ "zones" ] 0 1))
+                    )
+            , U.test "only the element that moved changes lines" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (Ok "z = [\n  \"C\", # c\n  \"A\", # a\n  \"B\", # b\n]\n")
+                        (editing "z = [\n  \"A\", # a\n  \"B\", # b\n  \"C\", # c\n]\n"
+                            (Edit.moveAt [ "z" ] 2 0)
+                        )
+                    )
+            , U.test "and a move of one place is the two lines swapping" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (Ok "z = [\n  \"A\", # a\n  \"C\", # c\n  \"B\", # b\n]\n")
+                        (editing "z = [\n  \"A\", # a\n  \"B\", # b\n  \"C\", # c\n]\n"
+                            (Edit.moveAt [ "z" ] 2 1)
+                        )
+                    )
+            , U.test "the indent and the comma are the destination's, note and all" <| \_ ->
+                -- Into the last place, where the element carries the newline
+                -- the closing bracket needs and has no comma of its own.
+                Task.succeed
+                    (Expect.equal
+                        (expectingList
+                            (replaceLine "  1, # one" "  2, # two"
+                                >> replaceLine "  2 # two" "  1 # one"
+                            )
+                        )
+                        (editList (Edit.moveAt [ "noted" ] 0 1))
+                    )
+            , U.test "and out of the last place, which is the same swap the other way" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (editList (Edit.moveAt [ "noted" ] 0 1))
+                        (editList (Edit.moveAt [ "noted" ] 1 0))
+                    )
+            , U.test "a hanging bracket keeps its column when an element moves" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expectingList
+                            (replaceLine "           2," "           3,"
+                                >> replaceLine "           3]" "           2]"
+                            )
+                        )
+                        (editList (Edit.moveAt [ "hanging" ] 1 2))
+                    )
+            , U.test "an element with a note will not move onto a line another element ends" <| \_ ->
+                -- There is nowhere on the line `2` and `3` share to write
+                -- `# one`, and writing it against either of them would be a
+                -- note against a value nobody wrote it for.
+                let
+                    shared =
+                        "a = [\n  1, # one\n  2, 3,\n]\n"
+                in
+                Task.succeed
+                    (Expect.equal (Ok shared) (editing shared (Edit.moveAt [ "a" ] 0 1)))
+            , U.test "and without the note the same move is only the values changing places" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok "a = [\n  2, 1, 3,\n]\n")
+                        (editing "a = [\n  1,\n  2, 3,\n]\n" (Edit.moveAt [ "a" ] 0 1))
+                    )
+            , U.test "moving an element to where it already is changes nothing at all" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok lists) (editList (Edit.moveAt [ "zones" ] 1 1)))
+            , U.test "and an index out of range at either end changes nothing either" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        { from = Ok lists, to = Ok lists, negative = Ok lists }
+                        { from = editList (Edit.moveAt [ "zones" ] 2 0)
+                        , to = editList (Edit.moveAt [ "zones" ] 0 2)
+                        , negative = editList (Edit.moveAt [ "zones" ] -1 0)
+                        }
                     )
             -- TAKING ONE OUT TAKES ITS NOTE WITH IT
             , U.test "removing the first element leaves the second where it was" <| \_ ->

@@ -10,6 +10,7 @@ module Toml.Edit exposing
     , float
     , get
     , inlineTable
+    , insertAt
     , int
     , introduce
     , literalString
@@ -17,6 +18,7 @@ module Toml.Edit exposing
     , localDateTime
     , localTime
     , member
+    , moveAt
     , multilineLiteralString
     , multilineString
     , offsetDateTime
@@ -283,7 +285,7 @@ with the file already existing.
 
 ## One element of an array
 
-@docs appendTo, setAt, removeAt, respellAt
+@docs appendTo, insertAt, setAt, removeAt, respellAt, moveAt
 
 
 ## Renaming
@@ -983,6 +985,56 @@ appendTo path content document =
             set path (array [ content ]) document
 
 
+{-| Add one element to the array a key holds, at a position. The elements
+already in it are left exactly as they are written.
+
+    Toml.Edit.insertAt [ "zones" ] 1 (Toml.Edit.string "Europe/Oslo")
+
+    -->  zones = [
+    -->    "Asia/Seoul",      # them
+    -->    "Europe/Oslo",
+    -->    "America/Chicago", # me
+    -->  ]
+
+The new element takes the line of the one it displaces: the same indent, and a
+comma, since something follows it now. The element it pushed down gets the same
+separator with nothing written on it, because the note that was on that line was
+written against the value above and stays where it is.
+
+**The new element has no note of its own**, which is the only honest default: a
+note is written against a value, and this value is new. Nothing here writes one
+either -- a note against an element is the file's, and the one function that
+moves one is [`moveAt`](#moveAt), which takes an element's own along with it.
+
+An index equal to the length of the array appends, which is the one case where
+this and [`appendTo`](#appendTo) do the same thing -- including writing a
+one-element array for a key that is not there yet. Any other index that is not
+in the array leaves the document unchanged, as does a key that holds something
+other than an array.
+
+-}
+insertAt : Array String -> Int -> Value -> Document -> Document
+insertAt path index content document =
+    when get path document is
+        Just (Ast.ArrayVal lit) ->
+            when insertedAt index content lit is
+                Just longer ->
+                    setArray path longer document
+
+                Nothing ->
+                    document
+
+        Just _ ->
+            document
+
+        Nothing ->
+            if index == 0 then
+                set path (array [ content ]) document
+
+            else
+                document
+
+
 {-| Replace one element of the array a key holds, by position. Nothing else
 changes: not the elements around it, not the whitespace, not the comments.
 
@@ -1106,6 +1158,62 @@ removeAt path index document =
             when removedFrom index lit is
                 Just shorter ->
                     setArray path shorter document
+
+                Nothing ->
+                    document
+
+        _ ->
+            document
+
+
+{-| Move one element of the array a key holds from one position to another, and
+take the note written against it along.
+
+    Toml.Edit.moveAt [ "zones" ] 1 0
+
+    -->  zones = [
+    -->    "America/Chicago", # me
+    -->    "Asia/Seoul",      # them
+    -->  ]
+
+`to` is the index the element ends up at, so a **Move Up** button is
+`moveAt path index (index - 1)` and a **Move Down** is `moveAt path index
+(index + 1)`.
+
+This is a function of its own rather than a [`removeAt`](#removeAt) followed by
+an [`insertAt`](#insertAt) because that pair cannot carry the note: `removeAt`
+takes it away with the element, which is right, and `insertAt` writes an element
+that has none. Walking the new order down the list with [`setAt`](#setAt)
+instead keeps every note, but keeps it against the *position*, so a move leaves
+`# me` written against somebody else's city, silently, which is worse than
+losing it. A note belongs to the value it was written for, and here it goes
+where that value goes.
+
+Only the value and its note move. The indent and the trailing comma are the
+destination's, because those describe a place in the list rather than the thing
+in it, and the last position's are the ones that keep the closing bracket where
+the file put it.
+
+The document comes back unchanged if either index is out of range, if the key is
+missing, or if the key is not an array. Moving an element to where it already is
+changes nothing at all. There is one more: an element with a note cannot move
+onto a line that another element also ends, since there is nowhere on it to
+write the note. Below, `# one` has nowhere to go on the line `2` and `3` share,
+so `moveAt [ "a" ] 0 1` leaves the file alone.
+
+    a = [
+      1, # one
+      2, 3,
+    ]
+
+-}
+moveAt : Array String -> Int -> Int -> Document -> Document
+moveAt path from to document =
+    when get path document is
+        Just (Ast.ArrayVal lit) ->
+            when movedIn from to lit is
+                Just moved ->
+                    setArray path moved document
 
                 Nothing ->
                     document
@@ -1253,6 +1361,86 @@ appended content lit =
             }
 
 
+{-| The array with one more element at an index, or on the end when the index is
+the length. The element that was there moves down and keeps everything about
+itself but the separator in front of it: that separator holds the note of the
+element *above*, the note belongs to the line it is on, and the new element is
+on that line now. So the new element takes it as it stands and the displaced one
+gets a copy with no note in it.
+
+Index 0 is the one that cannot take its separator from where it is going. The
+trivia in front of the first element is whatever follows the `[`, which in an
+array on one line is nothing at all, so the displaced element takes its
+separator from in front of the element *after* it instead: the space after a
+comma in `[1, 2]`, the line ending and the indent in a list written over several
+lines. An array of one element has no such neighbour and falls back to what
+follows the `[`, which is right for every shape but a flat `[1]` -- and that one
+becomes `[2,1]`, exactly as appending to it makes `[1,2]`.
+
+-}
+insertedAt : Int -> Value -> ArrayLit -> Maybe ArrayLit
+insertedAt index content lit =
+    if index < 0 then
+        Nothing
+
+    else if index == Array.length lit.elements then
+        Just (appended content lit)
+
+    else
+        when elementAt index lit is
+            Nothing ->
+                Nothing
+
+            Just displaced ->
+                Just
+                    { lit
+                        | elements =
+                            Array.prepend
+                                (Array.takeFirst index lit.elements
+                                    |> Array.pushLast
+                                        { before = displaced.before
+                                        , value = content
+                                        , after = []
+                                        , comma = True
+                                        }
+                                )
+                                (Array.dropFirst index lit.elements
+                                    |> Array.update
+                                        0
+                                        (\element ->
+                                            { element | before = separatorFor index lit }
+                                        )
+                                )
+                    }
+
+
+{-| What goes in front of the element at an index once something has been
+written above it: the separator it already had, or, when it was the first
+element, the one in front of whatever follows it. Any note in there stays with
+the line it was written on, which is now the new element's.
+-}
+separatorFor : Int -> ArrayLit -> Trivia
+separatorFor index lit =
+    when elementAt index lit is
+        Nothing ->
+            []
+
+        Just displaced ->
+            when
+                (if index == 0 then
+                    Array.get 1 lit.elements
+
+                 else
+                    Nothing
+                )
+            is
+                Just following ->
+                    closingOf following.before
+
+                Nothing ->
+                    closingOf displaced.before
+
+
 {-| The array with one element gone and the whitespace on either side of it
 joined back together.
 
@@ -1328,6 +1516,201 @@ removedFrom index lit =
                                         }
                                     )
                     }
+
+
+{-| The array with the element at one index at another, its note with it.
+
+It is [`removedFrom`](#removedFrom) and then [`insertedAt`](#insertedAt), which
+between them already know where an element's line, comma and closing bracket
+are kept. What those two cannot do is the note, so it is read before the element
+leaves and written after it lands. `Nothing` from any of the three leaves the
+document alone: an index out of range, or a note with nowhere to go.
+
+-}
+movedIn : Int -> Int -> ArrayLit -> Maybe ArrayLit
+movedIn from to lit =
+    let
+        last =
+            Array.length lit.elements - 1
+    in
+    if from < 0 || to < 0 || from > last || to > last then
+        Nothing
+
+    else if from == to then
+        Just lit
+
+    else
+        when elementAt from lit is
+            Nothing ->
+                Nothing
+
+            Just moving ->
+                removedFrom from lit
+                    |> Maybe.andThen (insertedAt to moving.value)
+                    |> Maybe.andThen (withNoteAfter to (noteAfter from lit))
+
+
+{-| A note written against a value: the comment, and the spaces that held it off
+the text before it. The two travel together so that a note keeps the alignment
+it was given.
+-}
+type alias Note =
+    { spaces : Trivia
+    , comment : Comment
+    }
+
+
+{-| The note on the line an element's value ends, if there is one. It is the
+same convention [`removeAt`](#removeAt) removes by -- the comment after the
+element, up to the end of that line -- and the trivia holding it is whichever
+comes first: the element's own `after`, where a comment before the comma lives
+and where a bare last element keeps everything, then the next element's
+`before`, or the array's `trailing` for a last element with a comma. Joining the
+two and reading the first line ending finds it wherever it is.
+-}
+noteAfter : Int -> ArrayLit -> Maybe Note
+noteAfter index lit =
+    when elementAt index lit is
+        Nothing ->
+            Nothing
+
+        Just element ->
+            noteOn (Array.prepend element.after (nextTrivia index lit))
+
+
+{-| The trivia after an element's comma: the following element's indent, or what
+is in front of the closing bracket when there is no following element.
+-}
+nextTrivia : Int -> ArrayLit -> Trivia
+nextTrivia index lit =
+    when Array.get (index + 1) lit.elements is
+        Just next ->
+            next.before
+
+        Nothing ->
+            lit.trailing
+
+
+{-| The note on the first line of a boundary, if that line ends with one.
+-}
+noteOn : Trivia -> Maybe Note
+noteOn pieces =
+    when firstBreak pieces is
+        Nothing ->
+            Nothing
+
+        Just at ->
+            when Array.get at pieces is
+                Just (Ast.Break fields) ->
+                    Maybe.map
+                        (\comment -> { spaces = spacesBefore at pieces, comment = comment })
+                        fields.comment
+
+                _ ->
+                    Nothing
+
+
+{-| The spaces that held a comment off the text before it, if any did.
+`Array.get -1` in Gren is the *last* piece, so a comment at the very start of a
+boundary is answered before the lookup rather than by it.
+-}
+spacesBefore : Int -> Trivia -> Trivia
+spacesBefore at pieces =
+    when
+        (if at <= 0 then
+            Nothing
+
+         else
+            Array.get (at - 1) pieces
+        )
+    is
+        Just (Ast.Spaces text) ->
+            [ Ast.Spaces text ]
+
+        _ ->
+            []
+
+
+{-| The array with a note written on the line the element at an index ends,
+which is the line [`noteAfter`](#noteAfter) reads one from. Nothing to write is
+not a failure and gives the array back as it is; nowhere to write it is, and the
+caller leaves the whole document alone rather than dropping the note or leaving
+it against a value it was not written for.
+-}
+withNoteAfter : Int -> Maybe Note -> ArrayLit -> Maybe ArrayLit
+withNoteAfter index note lit =
+    when note is
+        Nothing ->
+            Just lit
+
+        Just written ->
+            when elementAt index lit is
+                Nothing ->
+                    Nothing
+
+                Just element ->
+                    if hasBreak element.after then
+                        placeNote written element.after
+                            |> Maybe.map
+                                (\filled ->
+                                    { lit
+                                        | elements =
+                                            Array.update index
+                                                (\one -> { one | after = filled })
+                                                lit.elements
+                                    }
+                                )
+
+                    else if index + 1 < Array.length lit.elements then
+                        placeNote written (nextTrivia index lit)
+                            |> Maybe.map
+                                (\filled ->
+                                    { lit
+                                        | elements =
+                                            Array.update (index + 1)
+                                                (\next -> { next | before = filled })
+                                                lit.elements
+                                    }
+                                )
+
+                    else
+                        placeNote written lit.trailing
+                            |> Maybe.map (\filled -> { lit | trailing = filled })
+
+
+{-| The boundary with a note written on its first line: the spaces the note
+brought with it, then the comment, on the line ending that is already there.
+
+`Nothing` when the boundary has no line ending, since a comment inside an array
+has to be followed by one and there is no line here to put it on. `Nothing` too
+when that line already ends with a comment, since two notes cannot share a line
+and the one that is there was written against the value on it.
+
+-}
+placeNote : Note -> Trivia -> Maybe Trivia
+placeNote note pieces =
+    when firstBreak pieces is
+        Nothing ->
+            Nothing
+
+        Just at ->
+            when Array.get at pieces is
+                Just (Ast.Break fields) ->
+                    if fields.comment /= Nothing then
+                        Nothing
+
+                    else
+                        Just
+                            (Array.prepend
+                                (Array.prepend (Array.takeFirst at pieces) note.spaces
+                                    |> Array.pushLast
+                                        (Ast.Break { fields | comment = Just note.comment })
+                                )
+                                (Array.dropFirst (at + 1) pieces)
+                            )
+
+                _ ->
+                    Nothing
 
 
 {-| What sits in front of the closing bracket once the last element is gone,
@@ -1588,6 +1971,14 @@ The line goes, its leading comment block goes, and its trailing comment goes wit
 the line it was on. A floating comment -- one with a blank line above it -- stays,
 which is the whole point of the blank line.
 
+The blank line above the block goes too, but only when the block leaves a blank
+line or the end of the file below it. This is what makes `remove` the inverse of
+[`introduce`](#introduce): `blankBefore` is a field of the key's own
+[`Comments`](#Comments), so a program that writes a key when a setting is on and
+removes it when the setting goes off would otherwise leave one empty line behind
+per cycle. A block with a blank on one side only keeps it, because that blank is
+what separates what is above the key from what is below it, and both are staying.
+
 Nothing else changes. Removing the last key of a table leaves the `[header]`
 behind, because an empty table is still a table and saying otherwise would be
 this module deciding something the file did not.
@@ -1600,8 +1991,32 @@ remove path document =
             document
 
         Just index ->
+            let
+                block =
+                    firstOwned index document.expressions
+            in
             rebuild document
-                (cut (firstOwned index document.expressions) (index + 1) document.expressions)
+                (cut
+                    (if closesUp block (index + 1) document.expressions then
+                        block - 1
+
+                     else
+                        block
+                    )
+                    (index + 1)
+                    document.expressions
+                )
+
+
+{-| Whether the blank line above the lines being taken out should go with them:
+there is one, and what is left below them is blank too, or is the end of the
+file. Two blank lines around a block become one when the block goes, which is
+the file as it would have been written had the key never been there.
+-}
+closesUp : Int -> Int -> Array Expression -> Bool
+closesUp block after expressions =
+    isBlank (block - 1) expressions
+        && (after >= Array.length expressions || isBlank after expressions)
 
 
 {-| Give a key a new name and change nothing else.

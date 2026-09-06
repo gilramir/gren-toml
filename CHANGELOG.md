@@ -1,3 +1,25 @@
+# 1.2.0
+
+Move an element of an array without losing the note against it, and take the
+blank line with the key it belongs to.
+
+- Add `insertAt` and `moveAt` to `Toml.Edit`. `appendTo`, `setAt`, `removeAt`
+  and `respellAt` covered adding at the end, changing in place and taking out,
+  which left no way to reorder a list: a `removeAt` and an `insertAt` lose the
+  note written against the element, each of them correctly, and walking the new
+  order down the list with `setAt` keeps every note against its *position*, so
+  a move leaves `# me` written against somebody else's city. `moveAt` takes the
+  value and its note together. `insertAt` puts an element anywhere in the list
+  rather than only on the end, and the elements around it keep their lines,
+  their indentation and their comments as the other four leave them.
+- `remove` now takes the blank line above a key's comment block with it, when
+  the block leaves a blank line or the end of the file below it. `blankBefore`
+  is a field of the key's own `Comments` and `introduce` writes that line, so
+  without this a program that wrote a key when a setting was on and removed it
+  when the setting went back to its default added one empty line to the file
+  per cycle. A block with a blank line on one side only keeps it: that one
+  separates what is above the key from what is below it.
+
 # 1.1.0
 
 Write all four string forms, and change one element of an array at a time.
