@@ -37,7 +37,7 @@ Everything runs inside devbox; `gren` and node 22 are not on `PATH` otherwise.
 ```sh
 devbox run build    # compile the package
 devbox run docs     # check the doc comments parse
-devbox run test     # tests/run.sh: 186 checks, 714 of them corpus files, ~0.9s
+devbox run test     # tests/run.sh: 230 checks, 714 of them corpus files, ~1.0s
 devbox run gen      # regenerate the two generated test fixtures
 
 devbox run conformance   # toml-test/: the official runner. Needs Go and,
@@ -141,6 +141,56 @@ not there" is the whole of it: writing the comments unconditionally would
 overwrite whatever the user put in their config file every time the program
 saved.
 
+## The four string forms are chosen in one place
+
+`Toml.Strings.escape` and `Toml.Strings.literal` are the writing side, and each
+takes the `{ multiline : Bool }` that `unescape` and `verbatim` take on the
+reading side. `Toml.Literal` is their only caller; `Toml.Edit` and `Toml.Encode`
+are two more names for what it does. A new spelling goes there, never in a
+caller.
+
+**`string` writes a basic string and has to go on writing one.** Changing which
+form it picks would move the output of every program already using it, on the
+next save, for a library whose whole promise is that the file comes back the way
+it was left. A new form gets a new constructor.
+
+`literalString` and `multilineLiteralString` return a `Maybe` because `'...'`
+has no escapes and genuinely cannot spell an apostrophe. Do not "help" by
+falling back to a basic string: a constructor whose output form depends on its
+data is one that changes the shape of a key between two saves because somebody
+typed an apostrophe.
+
+None of this reaches `Toml.Ast` -- which of the four a value is written as is
+recoverable from `raw` through `Strings.kindOf` -- so `Toml.Write` has nothing
+to learn and the round trip has nothing to say about it. The `Writing` suite is
+what does: it writes each of 26 awkward bodies, parses it back and compares,
+because a `raw` the parser would reject makes a document that fails later, in
+`Toml.Table.fromDocument`, rather than where it was written.
+
+## An array element's note is not where it looks like it is
+
+`appendTo`, `setAt` and `removeAt` change one element and leave the rest of the
+array's text alone. Two pieces of trivia decide whether that works, and neither
+of them sits under the element it belongs to:
+
+- the note written after an element's comma lives in the **next** element's
+  `before` -- and in the array's `trailing` for the last element;
+- the space that holds the closing bracket off, the one in `[ 1, 2 ]`, lives in
+  the last element's **`after`**, not in `trailing` at all.
+
+The convention that follows from the first: everything up to and including the
+first `Break` of a boundary belongs to the line above it, and everything after
+that is the next element's indent. `upToFirstBreak` and `afterFirstBreak` are
+the whole of the arithmetic.
+
+The second is why `appended` moves the old last element's `after` onto the new
+one. A comma is about to be written where that space was, and `[ 1, 2 ]` comes
+out as `[ 1, 2 , 3]` if it does not move -- which is what the editing suite said
+before it was fixed.
+
+**`Array.get -1` in Gren is the last element**, so `elementAt` guards
+`index < 0`. Without it, `setAt path -1` would quietly change the last element.
+
 ## Comments come in two shapes, and that is deliberate
 
 `Toml.Edit.Comments` has `blankBefore`; `Toml.Encode.Comments` does not. Editing
@@ -218,6 +268,10 @@ ends at the emoji. Remove it when the fix lands, and the round-trip suite will
 say whether it was safe to.
 
 ## Tests
+
+`tests/src/Writing.gren` is the hand-written counterpart to the generated
+`Literals.gren`: that one is every string literal in the corpus read, this one
+is every form written. It is where a new spelling rule belongs.
 
 `tests/src/Numbers.gren` and `tests/src/Literals.gren` are **generated** by
 `tools/gen-numbers.py` and `tools/gen-strings.py` — or both at once, with

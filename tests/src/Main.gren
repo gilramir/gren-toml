@@ -38,7 +38,7 @@ main : Node.SimpleProgram a
 main =
     U.runWith
         { name = "gren-toml"
-        , version = "1.0.0"
+        , version = "1.1.0"
         , init =
             \done ->
                 Init.await FileSystem.initialize <| \fs ->

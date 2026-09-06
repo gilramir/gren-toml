@@ -418,6 +418,36 @@ how to change something *inside* one, because a path stops at the brace: an
 inline table has no lines to insert into, so the boundary is drawn there rather
 than guessed at.
 
+`appendTo`, `setAt` and `removeAt` are the other half of that comparison. It
+protects a hand-arranged array right up until the array actually changes, and
+then `set` has a new array to write and no old formatting to keep. These three
+change one element and leave the line, the indent and the notes as they were:
+
+```gren
+Toml.Edit.appendTo [ "zones" ] (Toml.Edit.string "Europe/Oslo")
+```
+
+```toml
+# Time zones, in the order they are shown.
+zones = [
+  "Asia/Seoul",      # them
+  "America/Chicago", # me
+  "Europe/Oslo",
+]
+```
+
+The new element copies the shape of the boundary in front of it — the newline
+and the indent, or a space after the comma on a one-line array — and takes the
+trailing comma the last element had, or leaves it off if that one did not have
+one. A key that is not there yet becomes a one-element array, so "add this to my
+list" is the same code on a file that does not exist.
+
+`removeAt` takes the note that belongs to the element with it, by a convention
+of the same kind as the one for keys: **a comment after an element's comma, up
+to the end of that line, is that element's**, and everything after that line
+ending is the next element's indent. Both take an index, and a negative one is
+out of range rather than counted from the end.
+
 A path into an array of tables names its last item, which is the item TOML
 itself means by `[peer.tls]` or `peer.x = 1` after the second `[[peer]]`.
 
@@ -535,6 +565,31 @@ and brackets. Fields come out in the order you gave them — except that a table
 own keys are written before its sections, because a key written after a
 `[header]` would land inside that header's table instead.
 
+You choose the string form too. `string` writes a basic string — `"..."` on one
+line, with `\n` for a newline — and always will, so no program's output moves
+under it. A value with lines in it wants `multilineString`, which writes a
+`"""` block:
+
+```gren
+Toml.Encode.field "notes"
+    (Toml.Encode.multilineString "One line.\nAnd another.\n")
+```
+
+```toml
+notes = """
+One line.
+And another.
+"""
+```
+
+`literalString` and `multilineLiteralString` write the two forms that have no
+escapes at all, `'...'` and `'''...'''`, and they return a `Maybe`: an
+apostrophe cannot go inside `'...'` by any spelling, and quietly writing some
+other form instead would mean a key changing shape between two saves because
+somebody typed one. `Maybe.withDefault` onto another form is one line and says
+so out loud. `Toml.Edit` has the same four constructors, and `Toml.Literal` is
+where all of them come from.
+
 ## Two layers, and you pick
 
 **`Toml.Ast`** is the file: a list of expressions in the order they appear,
@@ -594,6 +649,16 @@ Everything is checked against the official
 [toml-test](https://github.com/toml-lang/toml-test) suite, filtered to the
 1.1.0 manifest, read off the disk at run time.
 
+**Which TOML 1.1**, since the answer has moved before: the one in
+`vendor/toml-test/tests/files-toml-1.1.0`, at the commit that submodule is
+pinned to — `bc8f2c2`, `v1.6.0-74-gbc8f2c2`. Against the 1.0.0 manifest beside
+it, that adds `\x` and `\e` escapes, newlines and trailing commas inside inline
+tables, and seconds made optional in times and date-times, and it settles that a
+lone carriage return inside a multi-line string is invalid. It does **not** add
+the Unicode bare keys that were proposed for 1.1 and taken back out before it
+was released; `a-b_1` is still the whole of an unquoted key. The submodule is
+pinned so that this paragraph cannot quietly stop being true.
+
 | | |
 | --- | --- |
 | valid files that parse and lower | 220 / 220 |
@@ -620,7 +685,7 @@ reward for being valid.
 ## Tests
 
 ```sh
-devbox run test          # 186 checks, ~0.9s, no network
+devbox run test          # 230 checks, ~1.0s, no network
 devbox run conformance   # the official toml-test runner; needs Go
 ```
 
