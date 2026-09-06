@@ -56,6 +56,39 @@ what makes "write my whole configuration back" a safe thing for a program to
 do on every save.
 
 
+## The functions, in short
+
+Most of them come in pairs: the same thing for a key and for a table, or for a
+whole value and for one element of an array.
+
+| Function | What it is for |
+| --- | --- |
+| [`get`](#get) | The value at a path, if a key there holds one |
+| [`member`](#member) | Whether a key is in the file at all |
+| [`paths`](#paths) | Every key, in the order the file writes them |
+| [`set`](#set) | Put a value at a path, adding the key if it is missing |
+| [`respell`](#respell) | Rewrite a value the file already means, to change its spelling |
+| [`introduce`](#introduce) | `set`, and comments too when this call invented the key |
+| [`remove`](#remove) | Take a key out, with the comments that belong to it |
+| [`removeTable`](#removeTable) | Take a `[header]` out, with everything under it |
+| [`appendTo`](#appendTo) | One more element on the end of an array |
+| [`insertAt`](#insertAt) | One more element at a position |
+| [`setAt`](#setAt) | Replace one element |
+| [`respellAt`](#respellAt) | Rewrite one element, to change its spelling |
+| [`removeAt`](#removeAt) | Take one element out, with the note against it |
+| [`moveAt`](#moveAt) | Move one element, its note with it |
+| [`rename`](#rename) | Rename a key, keeping its value and its comments |
+| [`renameTable`](#renameTable) | Rename a table, and the headers nested under it |
+| [`comments`](#comments) | The comments that belong to a key |
+| [`setComments`](#setComments) | Write those back |
+| [`tableComments`](#tableComments) | The comments that belong to a `[header]` line |
+| [`setTableComments`](#setTableComments) | Write those back |
+
+The rest of the module is the values to put in -- [`string`](#string),
+[`int`](#int) and the others at the bottom -- which build the text for a value
+as well as the value itself.
+
+
 ## Which comments belong to a key
 
 Deleting a key should delete the comment that explains it and leave alone the
