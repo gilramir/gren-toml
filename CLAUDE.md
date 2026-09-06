@@ -37,7 +37,7 @@ Everything runs inside devbox; `gren` and node 22 are not on `PATH` otherwise.
 ```sh
 devbox run build    # compile the package
 devbox run docs     # check the doc comments parse
-devbox run test     # tests/run.sh: 234 checks, 714 of them corpus files, ~1.1s
+devbox run test     # tests/run.sh: 236 checks, 714 of them corpus files, ~1.1s
 devbox run gen      # regenerate the two generated test fixtures
 
 devbox run conformance   # toml-test/: the official runner. Needs Go and,
@@ -136,8 +136,8 @@ by text -- `0x1F` equals `31`, `1.50` equals `1.5`.
 of that type will always compare unequal and `set` will quietly go back to
 rewriting them. The fall-through is `_ -> False`, so nothing complains.
 
-`respell` is `set` with the comparison taken out, and it exists so that the
-comparison never has to be weakened. Changing `sameValue` to compare the
+`respell` is `set` with the comparison taken out, and `respellAt` is `setAt`
+the same way. They exist so that the comparison never has to be weakened. Changing `sameValue` to compare the
 *spelling* as well as the meaning would look like a small fix for "my program
 switched to `multilineString` and old files keep the old form", and it would
 reverse who wins on every save: the program's form would beat the user's, in

@@ -13,9 +13,9 @@ Writing the other three string forms, and changing one element of an array.
   the document already means it, for the one case that rule cannot serve --
   changing how a value is *written*, when a program has changed its mind about
   which form it writes. The key keeps its comments and its place, which `remove`
-  followed by `set` did not manage. `set` itself is unchanged: it still compares
-  by meaning, so `'a'` still equals `"a"` and a save that changes nothing still
-  touches nothing.
+  followed by `set` did not manage. `respellAt` is the same door for one element
+  of an array. `set` itself is unchanged: it still compares by meaning, so `'a'`
+  still equals `"a"` and a save that changes nothing still touches nothing.
 - `appendTo`, `setAt` and `removeAt` in `Toml.Edit`, which change one element of
   an array and leave the other elements' text, indent and comments where they
   are. `set` could only write the array whole, which threw away the formatting

@@ -1329,11 +1329,42 @@ editingSuite =
                     (Expect.equal (Ok lists)
                         (editList (Edit.setAt [ "zones" ] 1 (Edit.string "America/Chicago")))
                     )
+            , U.test "respellAt writes the other spelling of the same value" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        { setAt = Ok lists
+                        , respellAt =
+                            expectingList
+                                (replaceLine "  \"America/Chicago\", # me"
+                                    "  'America/Chicago', # me"
+                                )
+                        }
+                        { setAt =
+                            editList
+                                (Edit.setAt [ "zones" ] 1 (literally "America/Chicago"))
+                        , respellAt =
+                            editList
+                                (Edit.respellAt [ "zones" ] 1 (literally "America/Chicago"))
+                        }
+                    )
+            , U.test "and an index that is not there is nowhere to write one" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok lists)
+                        (editList (Edit.respellAt [ "zones" ] 2 (literally "Europe/Oslo")))
+                    )
             , U.test "an index that is not there changes nothing either" <| \_ ->
                 Task.succeed
                     (Expect.equal (Ok lists) (editList (Edit.setAt [ "flat" ] -1 (Edit.int 9))))
             ]
         }
+
+
+{-| A string as a literal one, `'like this'`, falling back to a basic string for
+a string that cannot be written that way. Every one in this file can be.
+-}
+literally : String -> Edit.Value
+literally text =
+    Maybe.withDefault (Edit.string text) (Edit.literalString text)
 
 
 readComments : Array String -> Edit.Comments

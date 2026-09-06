@@ -27,6 +27,7 @@ module Toml.Edit exposing
     , rename
     , renameTable
     , respell
+    , respellAt
     , set
     , setAt
     , setComments
@@ -282,7 +283,7 @@ with the file already existing.
 
 ## One element of an array
 
-@docs appendTo, setAt, removeAt
+@docs appendTo, setAt, removeAt, respellAt
 
 
 ## Renaming
@@ -993,28 +994,82 @@ An index that is not in the array leaves the document alone, and so does a key
 that is missing or is not an array. As with [`set`](#set), an element that
 already means what it is being set to is not rewritten: setting it would replace
 the whitespace *inside* it, and a program that writes its whole configuration
-back on every save would otherwise flatten an array it was not changing.
+back on every save would otherwise flatten an array it was not changing. To
+write the spelling anyway there is [`respellAt`](#respellAt).
 
 -}
 setAt : Array String -> Int -> Value -> Document -> Document
 setAt path index content document =
+    when elementOf path index document is
+        Just found ->
+            if sameValue content found.element.value then
+                document
+
+            else
+                setArray path (withValueAt index content found.lit) document
+
+        Nothing ->
+            document
+
+
+{-| Replace one element of an array whether or not it already means what it is
+being set to, so that the *spelling* of that element changes.
+
+    Toml.Edit.respellAt [ "zones" ] 1
+        (Maybe.withDefault (Toml.Edit.string "America/Chicago")
+            (Toml.Edit.literalString "America/Chicago")
+        )
+
+    -->  zones = [
+    -->    "Asia/Seoul",      # them
+    -->    'America/Chicago', # me
+    -->  ]
+
+[`setAt`](#setAt) is to this what [`set`](#set) is to [`respell`](#respell), and
+for the same reason: the comparison that leaves an unchanged value alone is
+worth keeping on by default, and changing how one element is written is the one
+thing it cannot let you do. The element keeps its line, its indent and the note
+written against it; only the value between them is rewritten.
+
+Unlike `respell` there is no falling back to writing the key, since a position
+in an array that is not there is not a place a value can go. An index out of
+range, a missing key or a key that is not an array all leave the document alone.
+
+-}
+respellAt : Array String -> Int -> Value -> Document -> Document
+respellAt path index content document =
+    when elementOf path index document is
+        Just found ->
+            setArray path (withValueAt index content found.lit) document
+
+        Nothing ->
+            document
+
+
+{-| The array a key holds and one element of it, which is what both of those
+have to find before they can do anything.
+-}
+elementOf :
+    Array String
+    -> Int
+    -> Document
+    -> Maybe { lit : ArrayLit, element : ArrayElement }
+elementOf path index document =
     when get path document is
         Just (Ast.ArrayVal lit) ->
-            when elementAt index lit is
-                Just element ->
-                    if sameValue content element.value then
-                        document
-
-                    else
-                        setArray path
-                            { lit | elements = Array.set index { element | value = content } lit.elements }
-                            document
-
-                Nothing ->
-                    document
+            elementAt index lit
+                |> Maybe.map (\element -> { lit = lit, element = element })
 
         _ ->
-            document
+            Nothing
+
+
+{-| The array with one element holding a different value and everything else
+about that element -- its line, its indent, its comma -- as it was.
+-}
+withValueAt : Int -> Value -> ArrayLit -> ArrayLit
+withValueAt index content lit =
+    { lit | elements = Array.update index (\element -> { element | value = content }) lit.elements }
 
 
 {-| Take one element out of the array a key holds, by position, with the note

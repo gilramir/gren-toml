@@ -452,6 +452,10 @@ trailing comma the last element had, or leaves it off if that one did not have
 one. A key that is not there yet becomes a one-element array, so "add this to my
 list" is the same code on a file that does not exist.
 
+`setAt` compares before it writes, the way `set` does, and `respellAt` is the
+one that writes anyway — the same pair, for one element rather than the whole
+key.
+
 `removeAt` takes the note that belongs to the element with it, by a convention
 of the same kind as the one for keys: **a comment after an element's comma, up
 to the end of that line, is that element's**, and everything after that line
@@ -695,7 +699,7 @@ reward for being valid.
 ## Tests
 
 ```sh
-devbox run test          # 234 checks, ~1.1s, no network
+devbox run test          # 236 checks, ~1.1s, no network
 devbox run conformance   # the official toml-test runner; needs Go
 ```
 
