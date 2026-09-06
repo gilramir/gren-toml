@@ -883,7 +883,7 @@ the only way to do it before and takes the key's comments away with the line.
 What it is for, in practice, is a form a program has changed its mind about --
 a value it used to write with [`string`](#string) and now writes with
 [`multilineString`](#multilineString), where `set` would leave every file
-written by the older version spelled the old way. Reach for it there, and not
+written by the older version spelled the old way. Use it then, and not
 in the code that saves everything: writing a spelling unconditionally on every
 save is how a user's own `'C:\Users'` gets turned back into a basic string,
 over and over, with nothing they can do to make it stick.
@@ -1146,6 +1146,43 @@ elementAt index lit =
 
 
 {-| The array with one more element on the end.
+
+Where an array's trivia lives, which is not under the element it looks like it
+belongs to:
+
+    zones = [
+      "Asia/Seoul",   # them
+      "Europe/Oslo",  # me
+    ]
+
+    [0].before   "\n  "            the break after `[`, then the indent
+    [0].value    "Asia/Seoul"
+    [0].after    ""
+    [0].comma    True
+    [1].before   "   # them\n  "   element 0's note, then element 1's indent
+    [1].value    "Europe/Oslo"
+    [1].after    ""
+    [1].comma    True
+    trailing     "  # me\n"        element 1's note, then the indent of the `]`
+
+An element's note is written after its comma, so it is held by the element
+*below* it, and the last element's is held by the array. Take that last comma
+away and the tail moves again: `trailing` empties, and everything from the value
+to the `]` is in that element's own `after`.
+
+    zones = [
+      "Asia/Seoul",   # them
+      "Europe/Oslo"   # me
+    ]
+
+    [1].after    "   # me\n"
+    [1].comma    False
+    trailing     ""
+
+The trivia is shown here as the text it stands for; it is really an array of
+`Spaces` and `Break`, and a `Break` is where a comment is kept -- which is why
+the arithmetic below is about the first line ending rather than about
+characters.
 
 The boundary the new element is written into is everything between the old last
 value and the closing bracket, and which field holds it depends on the comma:

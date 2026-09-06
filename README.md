@@ -417,7 +417,7 @@ file already means it, so the *spelling* changes and not only the value, and the
 key keeps its comments and its place in the file. It is a separate function
 rather than a flag because the rule is worth keeping on by default — a program
 that writes a spelling unconditionally on every save is one that turns the
-user's own `'C:\Users'` back into a basic string, over and over. Reach for it
+user's own `'C:\Users'` back into a basic string, over and over. Use it for it
 on the one key you mean to change: a value your program used to write with
 `string` and now writes with `multilineString`, where `set` would leave every
 file the older version wrote spelled the old way.
