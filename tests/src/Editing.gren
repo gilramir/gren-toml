@@ -29,6 +29,7 @@ import Task
 import Test.Runner.UnitNode as U
 import Toml
 import Toml.Ast as Ast
+import Toml.Decode as Decode
 import Toml.Edit as Edit
 import Toml.Encode as Encode
 import Toml.Table as Table
@@ -165,6 +166,62 @@ intValue found =
 
         _ ->
             Nothing
+
+
+{-| A second file, for the tests about one element of an array. Every shape a
+person actually writes: a list arranged over several lines with a note against
+each element, one flat, one with the bracket hanging off the first element, one
+over several lines with a trailing comma and one without -- which is the shape
+where the last newline belongs to the last *element* and not to the array -- and
+the two empty ones.
+-}
+listed : Array String
+listed =
+    [ "# Time zones, in the order they are shown."
+    , "zones = ["
+    , "  \"Asia/Seoul\",      # them"
+    , "  \"America/Chicago\", # me"
+    , "]"
+    , "flat = [1, 2, 3]"
+    , "spaced = [ 1, 2 ]"
+    , "hanging = [1,"
+    , "           2,"
+    , "           3]"
+    , "empty = []"
+    , "roomy = [ ]"
+    , "plain = ["
+    , "  \"a\","
+    , "  \"b\","
+    , "]"
+    , "bare = ["
+    , "  1,"
+    , "  2"
+    , "]"
+    , "notAList = 3"
+    , ""
+    ]
+
+
+lists : String
+lists =
+    String.join "\n" listed
+
+
+{-| The same read-change-write as [`edit`](#edit), on the file with the arrays
+in it.
+-}
+editList : (Toml.Document -> Toml.Document) -> Result String String
+editList change =
+    Toml.parse lists
+        |> Result.mapError Toml.errorToString
+        |> Result.map (change >> Toml.toString)
+
+
+{-| What the arrays file looks like with some of its lines changed.
+-}
+expectingList : (Array String -> Array String) -> Result String String
+expectingList change =
+    Ok (String.join "\n" (change listed))
 
 
 {-| -}
@@ -1073,6 +1130,170 @@ editingSuite =
                                 )
                         )
                     )
+            -- ONE ELEMENT OF AN ARRAY, AND NOTHING ELSE
+            , U.test "the file with the arrays in it comes back untouched too" <| \_ ->
+                Task.succeed (Expect.equal (Ok lists) (editList identity))
+            , U.test "appending keeps the other elements' lines and notes" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expectingList
+                            (afterLine "  \"America/Chicago\", # me" "  \"Europe/Oslo\",")
+                        )
+                        (editList (Edit.appendTo [ "zones" ] (Edit.string "Europe/Oslo")))
+                    )
+            , U.test "and what it wrote says what it should" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok [ "Asia/Seoul", "America/Chicago", "Europe/Oslo" ])
+                        (editList (Edit.appendTo [ "zones" ] (Edit.string "Europe/Oslo"))
+                            |> Result.andThen
+                                (\written ->
+                                    Decode.fromString
+                                        (Decode.field "zones" (Decode.array Decode.string))
+                                        written
+                                        |> Result.mapError Decode.errorToString
+                                )
+                        )
+                    )
+            , U.test "an array on one line stays on one line" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expectingList (replaceLine "flat = [1, 2, 3]" "flat = [1, 2, 3, 4]"))
+                        (editList (Edit.appendTo [ "flat" ] (Edit.int 4)))
+                    )
+            , U.test "and the spaces inside its brackets stay where they are" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expectingList (replaceLine "spaced = [ 1, 2 ]" "spaced = [ 1, 2, 3 ]"))
+                        (editList (Edit.appendTo [ "spaced" ] (Edit.int 3)))
+                    )
+            , U.test "a hanging bracket keeps hanging" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expectingList
+                            (replaceLine "           3]" "           3,\n           4]")
+                        )
+                        (editList (Edit.appendTo [ "hanging" ] (Edit.int 4)))
+                    )
+            , U.test "an empty array is filled without gaining spaces" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expectingList (replaceLine "empty = []" "empty = [1]"))
+                        (editList (Edit.appendTo [ "empty" ] (Edit.int 1)))
+                    )
+            , U.test "and one written with a space inside keeps it" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expectingList (replaceLine "roomy = [ ]" "roomy = [ 1 ]"))
+                        (editList (Edit.appendTo [ "roomy" ] (Edit.int 1)))
+                    )
+            , U.test "a trailing comma is kept, since the file had one" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expectingList (afterLine "  \"b\"," "  \"c\","))
+                        (editList (Edit.appendTo [ "plain" ] (Edit.string "c")))
+                    )
+            , U.test "a key that is not there yet becomes a one-element array" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expectingList (afterLine "notAList = 3" "brand = [1]"))
+                        (editList (Edit.appendTo [ "brand" ] (Edit.int 1)))
+                    )
+            , U.test "a key that is not an array is left alone" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok lists)
+                        (editList (Edit.appendTo [ "notAList" ] (Edit.int 1)))
+                    )
+            , U.test "an array whose last element carries the closing newline gains a line" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expectingList (replaceLine "  2" "  2,\n  3"))
+                        (editList (Edit.appendTo [ "bare" ] (Edit.int 3)))
+                    )
+            -- TAKING ONE OUT TAKES ITS NOTE WITH IT
+            , U.test "removing the first element leaves the second where it was" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expectingList (dropLines [ "  \"Asia/Seoul\",      # them" ]))
+                        (editList (Edit.removeAt [ "zones" ] 0))
+                    )
+            , U.test "and removing the last one moves the closing bracket up, not the notes" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expectingList (dropLines [ "  \"America/Chicago\", # me" ]))
+                        (editList (Edit.removeAt [ "zones" ] 1))
+                    )
+            , U.test "removing from the middle of a one-line array leaves one separator" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expectingList (replaceLine "flat = [1, 2, 3]" "flat = [1, 3]"))
+                        (editList (Edit.removeAt [ "flat" ] 1))
+                    )
+            , U.test "removing the first leaves nothing against the bracket" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expectingList (replaceLine "flat = [1, 2, 3]" "flat = [2, 3]"))
+                        (editList (Edit.removeAt [ "flat" ] 0))
+                    )
+            , U.test "and removing the last leaves nothing against the closing one" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expectingList (replaceLine "flat = [1, 2, 3]" "flat = [1, 2]"))
+                        (editList (Edit.removeAt [ "flat" ] 2))
+                    )
+            , U.test "the spaces inside the brackets survive that too" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expectingList (replaceLine "spaced = [ 1, 2 ]" "spaced = [ 1 ]"))
+                        (editList (Edit.removeAt [ "spaced" ] 1))
+                    )
+            , U.test "a hanging bracket stays hanging when the last element goes" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expectingList
+                            (dropLines [ "           3]" ]
+                                >> replaceLine "           2," "           2]"
+                            )
+                        )
+                        (editList (Edit.removeAt [ "hanging" ] 2))
+                    )
+            , U.test "the last element's trailing comma passes to the one before it" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expectingList (dropLines [ "  \"b\"," ]))
+                        (editList (Edit.removeAt [ "plain" ] 1))
+                    )
+            , U.test "and loses one again, closing bracket and all, when it shrinks" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expectingList (dropLines [ "  2" ] >> replaceLine "  1," "  1"))
+                        (editList (Edit.removeAt [ "bare" ] 1))
+                    )
+            , U.test "an index that is not in the array changes nothing" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok lists) (editList (Edit.removeAt [ "zones" ] 2)))
+            , U.test "and a negative one is out of range, not counted from the end" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok lists) (editList (Edit.removeAt [ "zones" ] -1)))
+            , U.test "an empty array has nothing to take out of it" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok lists) (editList (Edit.removeAt [ "roomy" ] 0)))
+            -- REPLACING ONE ELEMENT TOUCHES ONE ELEMENT
+            , U.test "setting an element by position leaves its note and the alignment" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expectingList
+                            (replaceLine "  \"America/Chicago\", # me" "  \"America/Denver\", # me")
+                        )
+                        (editList (Edit.setAt [ "zones" ] 1 (Edit.string "America/Denver")))
+                    )
+            , U.test "and setting it to what it already says changes nothing at all" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok lists)
+                        (editList (Edit.setAt [ "zones" ] 1 (Edit.string "America/Chicago")))
+                    )
+            , U.test "an index that is not there changes nothing either" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok lists) (editList (Edit.setAt [ "flat" ] -1 (Edit.int 9))))
             ]
         }
 

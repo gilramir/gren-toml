@@ -1,6 +1,7 @@
 module Toml.Edit exposing
     ( Comments
     , Value
+    , appendTo
     , array
     , bigDecimal
     , bigInt
@@ -21,10 +22,12 @@ module Toml.Edit exposing
     , offsetDateTime
     , paths
     , remove
+    , removeAt
     , removeTable
     , rename
     , renameTable
     , set
+    , setAt
     , setComments
     , setTableComments
     , string
@@ -276,6 +279,11 @@ with the file already existing.
 @docs get, member, set, introduce, remove, removeTable
 
 
+## One element of an array
+
+@docs appendTo, setAt, removeAt
+
+
 ## Renaming
 
 @docs rename, renameTable
@@ -321,7 +329,9 @@ import Civil.Time as CivilTime exposing (Time)
 import Maybe exposing (Maybe(..))
 import String
 import Toml.Ast as Ast exposing
-    ( Comment
+    ( ArrayElement
+    , ArrayLit
+    , Comment
     , Content(..)
     , Document
     , Expression
@@ -329,6 +339,7 @@ import Toml.Ast as Ast exposing
     , Newline(..)
     , SimpleKey
     , TableKind(..)
+    , Trivia
     )
 import Toml.Literal as Literal
 
@@ -885,6 +896,364 @@ introduce path note content document =
     else
         set path content document
             |> setComments path note
+
+
+{-| Add one element to the end of the array a key holds, leaving the elements
+already in it exactly as they are written.
+
+    Toml.Edit.appendTo [ "zones" ] (Toml.Edit.string "Europe/Oslo")
+
+    -->  zones = [
+    -->    "Asia/Seoul",      # them
+    -->    "America/Chicago", # me
+    -->    "Europe/Oslo",
+    -->  ]
+
+[`set`](#set) can write a whole array, and that is the right thing for a list
+whose every element is new. It is the wrong thing for a list a person has
+arranged over four lines with a note against each one, because the new array has
+no formatting and the old formatting is what gets thrown away. These three
+functions are the other half: they change one element and leave the file to say
+everything else the way it said it.
+
+The new element copies the shape of the boundary in front of it -- the newline
+and the indent if the array has them, a space after the comma if it is on one
+line -- and takes the trailing comma the last element had, or leaves it off if
+that one did not have one.
+
+A key that is not there yet is written as a one-element array, which is what
+makes "add this to my list" work on a file that does not exist. A key holding
+something that is not an array is left alone.
+
+-}
+appendTo : Array String -> Value -> Document -> Document
+appendTo path content document =
+    when get path document is
+        Just (Ast.ArrayVal lit) ->
+            setArray path (appended content lit) document
+
+        Just _ ->
+            document
+
+        Nothing ->
+            set path (array [ content ]) document
+
+
+{-| Replace one element of the array a key holds, by position, and touch nothing
+else -- not the elements around it, not the whitespace, not the notes.
+
+    Toml.Edit.setAt [ "zones" ] 1 (Toml.Edit.string "America/Denver")
+
+    -->  zones = [
+    -->    "Asia/Seoul",     # them
+    -->    "America/Denver", # me
+    -->  ]
+
+An index that is not in the array leaves the document alone, and so does a key
+that is missing or is not an array. As with [`set`](#set), an element that
+already means what it is being set to is not rewritten: setting it would replace
+the whitespace *inside* it, and a program that writes its whole configuration
+back on every save would otherwise flatten an array it was not changing.
+
+-}
+setAt : Array String -> Int -> Value -> Document -> Document
+setAt path index content document =
+    when get path document is
+        Just (Ast.ArrayVal lit) ->
+            when elementAt index lit is
+                Just element ->
+                    if sameValue content element.value then
+                        document
+
+                    else
+                        setArray path
+                            { lit | elements = Array.set index { element | value = content } lit.elements }
+                            document
+
+                Nothing ->
+                    document
+
+        _ ->
+            document
+
+
+{-| Take one element out of the array a key holds, by position, with the note
+that belongs to it.
+
+    Toml.Edit.removeAt [ "zones" ] 0
+
+    -->  zones = [
+    -->    "America/Chicago", # me
+    -->  ]
+
+Which note belongs to which element is a convention, the same way it is for a
+key, and this is it: **the comment after an element's comma, up to the end of
+that line, is that element's.** It is the one a person writes against the value,
+and it goes when the value goes. Everything after that line ending is the next
+element's indent and stays where it is.
+
+The last element is the one to watch, because the two things that make the array
+close -- the trailing comma and where the `]` sits -- are written against it. The
+element before it inherits both.
+
+An index that is not in the array leaves the document alone, and so does a key
+that is missing or is not an array. A negative one is not a position from the
+end here; it is out of range like any other.
+
+-}
+removeAt : Array String -> Int -> Document -> Document
+removeAt path index document =
+    when get path document is
+        Just (Ast.ArrayVal lit) ->
+            when removedFrom index lit is
+                Just shorter ->
+                    setArray path shorter document
+
+                Nothing ->
+                    document
+
+        _ ->
+            document
+
+
+{-| Put an array back where it came from. The value is known to have changed --
+the three above have all looked at it already -- so this does not ask
+[`sameValue`](#sameValue) a second time.
+-}
+setArray : Array String -> ArrayLit -> Document -> Document
+setArray path lit document =
+    when indexOf path document is
+        Just index ->
+            rebuild document
+                (Array.update index (replaceValue (Ast.ArrayVal lit)) document.expressions)
+
+        Nothing ->
+            document
+
+
+{-| The element at an index, if there is one. `Array.get -1` in Gren is the last
+element, and that is not what an index out of range should mean here.
+-}
+elementAt : Int -> ArrayLit -> Maybe ArrayElement
+elementAt index lit =
+    if index < 0 then
+        Nothing
+
+    else
+        Array.get index lit.elements
+
+
+{-| The array with one more element on the end.
+
+The new element's `before` is the trivia that used to sit before the closing
+bracket -- which is where the old last element's note lives -- followed by that
+element's own indent, so the note stays on its line and the new value starts
+where the one above it did. What is left in front of the bracket is the same
+trivia with the comments taken out of it, since a comment written against a
+value must not be left behind pointing at nothing.
+
+The old last element's `after` moves to the new one with it. Where a comma was
+about to be written there is no longer the place for the space that was holding
+the closing bracket off, and `[ 1, 2 ]` would otherwise gain one at `2 ,`.
+
+-}
+appended : Value -> ArrayLit -> ArrayLit
+appended content lit =
+    when Array.popLast lit.elements is
+        Nothing ->
+            { elements = [ { before = lit.trailing, value = content, after = [], comma = False } ]
+            , trailing = withoutComments lit.trailing
+            }
+
+        Just { last, initial } ->
+            { elements =
+                initial
+                    |> Array.pushLast { last | comma = True, after = [] }
+                    |> Array.pushLast
+                        { before =
+                            if Array.isEmpty lit.trailing then
+                                last.before
+
+                            else
+                                Array.prepend lit.trailing (indentOf last.before)
+                        , value = content
+                        , after = last.after
+                        , comma = last.comma
+                        }
+            , trailing = withoutComments lit.trailing
+            }
+
+
+{-| The array with one element gone, and the boundaries either side of it joined
+back up.
+
+For anything but the last element, what survives is the removed element's own
+`before` up to the end of the line above it -- which carries the *previous*
+element's note -- followed by the next element's indent. On one line, where
+there is no line ending in either, that is just the separator that was in front
+of the element, which is what a person would have left there.
+
+The last element is the special one. Its note is written after it, so what
+survives goes in front of the closing bracket, and only when that bracket is on
+a line of its own; an array that ends `2 ]` has nothing there to keep. The
+element before it takes over its comma, and its `after` as well, which is where
+the space in `[ 1, 2 ]` that holds the bracket off is kept.
+
+-}
+removedFrom : Int -> ArrayLit -> Maybe ArrayLit
+removedFrom index lit =
+    when elementAt index lit is
+        Nothing ->
+            Nothing
+
+        Just gone ->
+            if index == Array.length lit.elements - 1 then
+                Just
+                    { elements =
+                        Array.dropLast 1 lit.elements
+                            |> Array.update
+                                (index - 1)
+                                (\previous ->
+                                    { previous
+                                        | comma = gone.comma
+                                        , after =
+                                            if Array.isEmpty gone.after then
+                                                previous.after
+
+                                            else
+                                                gone.after
+                                    }
+                                )
+                    , trailing =
+                        if hasBreak lit.trailing then
+                            Array.prepend (upToFirstBreak gone.before) (afterFirstBreak lit.trailing)
+
+                        else
+                            lit.trailing
+                    }
+
+            else
+                Just
+                    { lit
+                        | elements =
+                            Array.remove index lit.elements
+                                |> Array.update
+                                    index
+                                    (\next ->
+                                        { next
+                                            | before =
+                                                Array.prepend (upToFirstBreak gone.before)
+                                                    (afterFirstBreak next.before)
+                                        }
+                                    )
+                    }
+
+
+{-| The pieces of a boundary up to and including the end of the line it starts
+on -- the part that belongs to whatever was written above it.
+-}
+upToFirstBreak : Trivia -> Trivia
+upToFirstBreak pieces =
+    when firstBreak pieces is
+        Just at ->
+            Array.takeFirst (at + 1) pieces
+
+        Nothing ->
+            pieces
+
+
+{-| The rest of it: the indent that belongs to whatever comes next.
+-}
+afterFirstBreak : Trivia -> Trivia
+afterFirstBreak pieces =
+    when firstBreak pieces is
+        Just at ->
+            Array.dropFirst (at + 1) pieces
+
+        Nothing ->
+            []
+
+
+{-| The indent a line starts with, which is whatever follows its last line
+ending.
+-}
+indentOf : Trivia -> Trivia
+indentOf pieces =
+    when lastBreak pieces is
+        Just at ->
+            Array.dropFirst (at + 1) pieces
+
+        Nothing ->
+            []
+
+
+firstBreak : Trivia -> Maybe Int
+firstBreak pieces =
+    Array.indexedFoldl
+        (\index piece found ->
+            when { found = found, piece = piece } is
+                { found = Nothing, piece = Ast.Break _ } ->
+                    Just index
+
+                _ ->
+                    found
+        )
+        Nothing
+        pieces
+
+
+lastBreak : Trivia -> Maybe Int
+lastBreak pieces =
+    Array.indexedFoldl
+        (\index piece found ->
+            when piece is
+                Ast.Break _ ->
+                    Just index
+
+                _ ->
+                    found
+        )
+        Nothing
+        pieces
+
+
+hasBreak : Trivia -> Bool
+hasBreak pieces =
+    firstBreak pieces /= Nothing
+
+
+{-| The same trivia with the comments taken out and the spaces that were holding
+them off taken out with them, so that nothing is left pointing at a line that no
+longer says anything.
+-}
+withoutComments : Trivia -> Trivia
+withoutComments pieces =
+    Array.foldl
+        (\piece kept ->
+            when piece is
+                Ast.Break fields ->
+                    if fields.comment == Nothing then
+                        Array.pushLast piece kept
+
+                    else
+                        Array.pushLast (Ast.Break { fields | comment = Nothing })
+                            (dropTrailingSpaces kept)
+
+                _ ->
+                    Array.pushLast piece kept
+        )
+        []
+        pieces
+
+
+dropTrailingSpaces : Trivia -> Trivia
+dropTrailingSpaces pieces =
+    when Array.last pieces is
+        Just (Ast.Spaces _) ->
+            Array.dropLast 1 pieces
+
+        _ ->
+            pieces
 
 
 {-| Whether two values mean the same thing, whatever they were written as.
