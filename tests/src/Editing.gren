@@ -541,6 +541,44 @@ editingSuite =
                     (Expect.equal (Ok source)
                         (edit (Edit.set [ "server", "port" ] (Edit.int 0x1F)))
                     )
+            , U.test "respell writes it anyway, and that is the whole difference" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expecting (replaceLine "\tport = 0x1F" "\tport = 31"))
+                        (edit (Edit.respell [ "server", "port" ] (Edit.int 31)))
+                    )
+            , U.test "the same value in another form is a change to respell and not to set" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        { set = Ok source
+                        , respell =
+                            expecting
+                                (replaceLine "name    = \"widget\"        # what it is called"
+                                    "name    = 'widget'        # what it is called"
+                                )
+                        }
+                        { set =
+                            edit
+                                (Edit.set [ "name" ]
+                                    (Maybe.withDefault (Edit.string "widget")
+                                        (Edit.literalString "widget")
+                                    )
+                                )
+                        , respell =
+                            edit
+                                (Edit.respell [ "name" ]
+                                    (Maybe.withDefault (Edit.string "widget")
+                                        (Edit.literalString "widget")
+                                    )
+                                )
+                        }
+                    )
+            , U.test "on a key that is not there it is exactly set" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (edit (Edit.set [ "server", "backlog" ] (Edit.int 64)))
+                        (edit (Edit.respell [ "server", "backlog" ] (Edit.int 64)))
+                    )
             , U.test "an array set to the same elements keeps the lines it was written on" <| \_ ->
                 let
                     text =

@@ -26,6 +26,7 @@ module Toml.Edit exposing
     , removeTable
     , rename
     , renameTable
+    , respell
     , set
     , setAt
     , setComments
@@ -276,7 +277,7 @@ data -- nested tables, arrays of tables, a section per item. This module is the
 better one when the file has a fixed set of keys and the same code has to cope
 with the file already existing.
 
-@docs get, member, set, introduce, remove, removeTable
+@docs get, member, set, respell, introduce, remove, removeTable
 
 
 ## One element of an array
@@ -837,10 +838,7 @@ escapes, an integer or float is its number whatever base or spelling it was
 written in, a date-time is the instant and the offset, an array is its elements
 in order, and an inline table is its entries in order. So `set` over `0x1F` with
 `int 31` changes nothing and the file keeps saying `0x1F`. To change the
-spelling rather than the value, [`remove`](#remove) the key and set it again.
-That takes the comments the key owned away with the line, so read them first
-with [`comments`](#comments) and put them back with [`setComments`](#setComments)
-after.
+spelling rather than the value, there is [`respell`](#respell).
 
 An edit that gives the file a meaning it cannot have -- a key under an inline
 table, say -- is not refused here. See [what this module does not
@@ -857,6 +855,48 @@ set path content document =
             else
                 rebuild document
                     (Array.update index (replaceValue content) document.expressions)
+
+        Nothing ->
+            insert path content document
+
+
+{-| Write a value whether or not the file already means it, so that the
+*spelling* changes and not only the value.
+
+    Toml.Edit.respell [ "server", "port" ] (Toml.Edit.int 31)
+
+    -->  port = 31          # was: port = 0x1F
+
+[`set`](#set) with its one rule taken away. That rule -- leave a value alone
+that already says what it is being set to -- is what makes writing a whole
+configuration back safe on every save, and it is also what stops a program from
+ever changing how a value is written. This is the door for the second thing,
+and it is a separate door on purpose: a program that opens it does so on the
+one key it means to, rather than for every key it saves.
+
+The key keeps everything but its value: the comments that belong to it, the
+whitespace around the equals sign, and its place in the file. That is the
+difference between this and [`remove`](#remove) followed by `set`, which was
+the only way to do it before and takes the key's comments away with the line.
+
+What it is for, in practice, is a form a program has changed its mind about --
+a value it used to write with [`string`](#string) and now writes with
+[`multilineString`](#multilineString), where `set` would leave every file
+written by the older version spelled the old way. Reach for it there, and not
+in the code that saves everything: writing a spelling unconditionally on every
+save is how a user's own `'C:\Users'` gets turned back into a basic string,
+over and over, with nothing they can do to make it stick.
+
+On a key that is not in the document this is exactly `set`, since a value with
+no spelling in the file yet cannot be spelled differently.
+
+-}
+respell : Array String -> Value -> Document -> Document
+respell path content document =
+    when indexOf path document is
+        Just index ->
+            rebuild document
+                (Array.update index (replaceValue content) document.expressions)
 
         Nothing ->
             insert path content document

@@ -412,6 +412,16 @@ because the program was saving some other key. The comparison is by value and
 not by text: `0x1F` and `31` are the same integer, `1.50` and `1.5` the same
 number, so nothing is rewritten to say what it already said.
 
+`respell` is `set` without that rule: it writes the value whether or not the
+file already means it, so the *spelling* changes and not only the value, and the
+key keeps its comments and its place in the file. It is a separate function
+rather than a flag because the rule is worth keeping on by default — a program
+that writes a spelling unconditionally on every save is one that turns the
+user's own `'C:\Users'` back into a basic string, over and over. Reach for it
+on the one key you mean to change: a value your program used to write with
+`string` and now writes with `multilineString`, where `set` would leave every
+file the older version wrote spelled the old way.
+
 The value can be an array or an inline table as well as a scalar — `array` and
 `inlineTable` write them on one line. Replacing the whole inline table is also
 how to change something *inside* one, because a path stops at the brace: an
@@ -685,7 +695,7 @@ reward for being valid.
 ## Tests
 
 ```sh
-devbox run test          # 230 checks, ~1.0s, no network
+devbox run test          # 234 checks, ~1.1s, no network
 devbox run conformance   # the official toml-test runner; needs Go
 ```
 
