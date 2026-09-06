@@ -7,9 +7,12 @@ module Toml.Literal exposing
     , inlineTable
     , int
     , key
+    , literalString
     , localDate
     , localDateTime
     , localTime
+    , multilineLiteralString
+    , multilineString
     , offsetDateTime
     , path
     , simpleKey
@@ -27,6 +30,10 @@ disagree about how to spell a float.
 The choices are the plain ones: a bare key when the grammar allows and a quoted
 one when it does not, decimal for integers, and only the escapes a string
 actually needs.
+
+Which of TOML's four string forms to write is a choice too, and it is the
+caller's rather than this module's: [`string`](#string) is always `"..."`, and
+the other three forms have a constructor each.
 
     Toml.Literal.string "10.0.0.1"      -- ip = "10.0.0.1"
     Toml.Literal.int 8000               -- ports = [8000]
@@ -46,7 +53,8 @@ actually needs.
 The one to read twice is [`float`](#float), because a `Float` and a decimal are
 not the same thing and this module has to pick one of them to write.
 
-@docs string, int, bigInt, float, bigDecimal, bool
+@docs string, multilineString, literalString, multilineLiteralString
+@docs int, bigInt, float, bigDecimal, bool
 @docs offsetDateTime, localDateTime, localDate, localTime
 @docs array, inlineTable
 @docs key, simpleKey, path
@@ -100,7 +108,7 @@ simpleKey name =
             name
 
         else
-            Strings.escape name
+            Strings.escape { multiline = False } name
     , value = name
     }
 
@@ -108,11 +116,75 @@ simpleKey name =
 -- VALUES
 
 
-{-| A string.
+{-| A string, written as a basic one: `"..."`, on one line, with `\n` for a
+newline.
+
+This is what a caller who has not thought about which form they want should
+get, and it is what they have always got, so it does not change with the wind.
+A string with newlines in it is better off as
+[`multilineString`](#multilineString), but that is for the caller to say.
+
 -}
 string : String -> Value
 string text =
-    StringVal { raw = Strings.escape text, value = text }
+    StringVal { raw = Strings.escape { multiline = False } text, value = text }
+
+
+{-| A string, written as a multi-line basic one: `"""..."""`, opening with a
+newline the reader trims, with the newlines and tabs in it written as
+themselves.
+
+Every string can be written this way -- the escapes are all still available
+inside `"""` -- so this one never fails. It is the form for a value with lines
+in it, which is to say a note, a key, a query, or anything else that a program
+put in a config file for a person to read.
+
+**A value that is already in the file is not re-spelled.**
+[`Toml.Edit.set`](Toml-Edit#set) compares by meaning, and a basic string
+already saying what this one says is left exactly as it was written. The form
+is chosen when the key is written, not on every save.
+
+-}
+multilineString : String -> Value
+multilineString text =
+    StringVal { raw = Strings.escape { multiline = True } text, value = text }
+
+
+{-| A string, written as a literal one: `'...'`, with no escapes at all.
+
+`Nothing` when the string cannot be written that way, which is an apostrophe, a
+newline, or a control character other than tab. A literal string has no escapes
+-- that is the point of it, and it is why this cannot always be done.
+
+It does not quietly write another form instead. A constructor whose output form
+depended on its data would be one that changed the shape of a key between two
+saves because somebody typed an apostrophe, and a noisy diff is the thing this
+package is against. A caller who would
+rather have a basic string than nothing can say so, and it reads as what it is:
+
+    Maybe.withDefault (Toml.Literal.string text)
+        (Toml.Literal.literalString text)
+
+-}
+literalString : String -> Maybe Value
+literalString text =
+    Strings.literal { multiline = False } text
+        |> Maybe.map (\raw -> StringVal { raw = raw, value = text })
+
+
+{-| A string, written as a multi-line literal one: `'''...'''`, with no escapes
+and with the newlines in it written as themselves.
+
+`Nothing` when the string cannot be written that way: a run of three
+apostrophes, a run of them at the very end where the closing delimiter goes, a
+lone carriage return, or a control character other than tab and newline. As
+with [`literalString`](#literalString), no other form is written in its place.
+
+-}
+multilineLiteralString : String -> Maybe Value
+multilineLiteralString text =
+    Strings.literal { multiline = True } text
+        |> Maybe.map (\raw -> StringVal { raw = raw, value = text })
 
 
 {-| An integer that fits in a Gren `Int`.

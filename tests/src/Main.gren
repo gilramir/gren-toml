@@ -8,6 +8,8 @@ module Main exposing (main)
     multi-line quote cases that decide where a triple quote ends.
   - `RoundTrip` reads all 934 files off the disk, parses them, and writes them
     back out, which is the property the whole AST is shaped around.
+  - `Writing` is the other half of `Literals`: which of the four string forms
+    the package writes a value as, checked by parsing back what it wrote.
   - `Examples` runs the examples in the doc comments, so that the results
     written beside them stay true.
 
@@ -29,6 +31,7 @@ import Semantics exposing (semanticsSuite)
 import Task
 import Test.Runner.UnitNode as U
 import Values exposing (valuesSuite)
+import Writing exposing (writingSuite)
 
 
 main : Node.SimpleProgram a
@@ -53,5 +56,6 @@ main =
                 , roundTripSuite perms
                 , semanticsSuite perms
                 , valuesSuite perms
+                , writingSuite
                 ]
         }

@@ -11,9 +11,12 @@ module Toml.Encode exposing
     , float
     , inlineTable
     , int
+    , literalString
     , localDate
     , localDateTime
     , localTime
+    , multilineLiteralString
+    , multilineString
     , offsetDateTime
     , string
     , table
@@ -182,7 +185,8 @@ Two things in that example are worth pointing at:
 
 ## Scalars
 
-@docs string, int, bigInt, float, bigDecimal, bool
+@docs string, multilineString, literalString, multilineLiteralString
+@docs int, bigInt, float, bigDecimal, bool
 @docs offsetDateTime, localDateTime, localDate, localTime
 
 
@@ -643,11 +647,50 @@ flatten content =
 -- SCALARS
 
 
-{-| A string.
+{-| A string, written as a basic one: `"..."` on one line.
 -}
 string : String -> Value
 string text =
     Scalar (Literal.string text)
+
+
+{-| A string, written as a multi-line one: `"""..."""`, with the newlines in it
+written as themselves rather than as `\n`.
+
+The form for a value a person is meant to read, and the one worth reaching for
+when a file this module writes has a paragraph in it. Every string can be
+written this way, so this never fails.
+
+-}
+multilineString : String -> Value
+multilineString text =
+    Scalar (Literal.multilineString text)
+
+
+{-| A string, written as a literal one: `'...'`, with no escapes at all.
+
+`Nothing` when the string has an apostrophe, a newline, or a control character
+other than tab in it, since a literal string has no way to spell those. It does
+not fall back to another form: which form a key is written in should not depend
+on what the value happens to contain.
+
+-}
+literalString : String -> Maybe Value
+literalString text =
+    Maybe.map Scalar (Literal.literalString text)
+
+
+{-| A string, written as a multi-line literal one: `'''...'''`: no escapes, and
+the newlines written as themselves.
+
+`Nothing` when the string cannot be spelled that way -- three apostrophes in a
+row, an apostrophe at the very end, a lone carriage return, or a control
+character other than tab and newline.
+
+-}
+multilineLiteralString : String -> Maybe Value
+multilineLiteralString text =
+    Maybe.map Scalar (Literal.multilineLiteralString text)
 
 
 {-| An integer that fits in a Gren `Int`.

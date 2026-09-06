@@ -1,0 +1,318 @@
+module Writing exposing (writingSuite)
+
+{-| Choosing which of the four string forms to write a value as.
+
+`Literals` is the generated suite for *reading* the four forms, taken from
+`toml-test`. This is the hand-written other half: what the package produces when
+it has a string and no source text to write it from.
+
+The question is asked by writing the value, `toString`-ing the document,
+parsing it back and reading the value out again -- not by comparing against an
+expected literal. `Toml.Write` emits `raw` as it stands, so a `raw` the parser
+would reject is a document that looks fine and fails later, in
+`Toml.Table.fromDocument`. Only the round trip catches that.
+
+A handful of spellings are pinned exactly all the same, since which characters
+get a backslash is a promise as much as the style is.
+
+@docs writingSuite
+
+-}
+
+import Array exposing (Array)
+import Basics exposing (..)
+import Expect
+import Maybe exposing (Maybe(..))
+import Result exposing (Result(..))
+import String
+import Task
+import Test.Runner.UnitNode as U
+import Toml
+import Toml.Decode as Decode
+import Toml.Edit as Edit
+import Toml.Encode as Encode exposing (field)
+
+
+{-| A string worth trying to write, and whether the two escape-less forms can
+hold it.
+
+`literal` is `'...'`: no apostrophe, no newline, no control character but tab.
+`mlLiteral` is `'''...'''`: newlines allowed, apostrophes allowed in runs of one
+or two that do not end the body, still no other control character and still no
+lone carriage return.
+
+-}
+type alias Body =
+    { name : String
+    , text : String
+    , literal : Bool
+    , mlLiteral : Bool
+    }
+
+
+bodies : Array Body
+bodies =
+    [ { name = "empty", text = "", literal = True, mlLiteral = True }
+    , { name = "a quote", text = "a \" b", literal = True, mlLiteral = True }
+    , { name = "a trailing quote", text = "ends with \"", literal = True, mlLiteral = True }
+    , { name = "two quotes", text = "a \"\" b", literal = True, mlLiteral = True }
+    , { name = "three quotes", text = "a \"\"\" b", literal = True, mlLiteral = True }
+    , { name = "four quotes", text = "a \"\"\"\" b", literal = True, mlLiteral = True }
+    , { name = "trailing quotes", text = "ends with \"\"\"", literal = True, mlLiteral = True }
+    , { name = "an apostrophe", text = "it's", literal = False, mlLiteral = True }
+    , { name = "two apostrophes", text = "a '' b", literal = False, mlLiteral = True }
+    , { name = "three apostrophes", text = "a ''' b", literal = False, mlLiteral = False }
+    , { name = "a trailing apostrophe", text = "ends with '", literal = False, mlLiteral = False }
+    , { name = "a lone backslash", text = "C:\\Users", literal = True, mlLiteral = True }
+    , { name = "a backslash at the end of a line", text = "a \\\nb", literal = False, mlLiteral = True }
+    , { name = "a tab", text = "a\tb", literal = True, mlLiteral = True }
+    , { name = "a CRLF", text = "a\r\nb", literal = False, mlLiteral = True }
+    , { name = "a lone carriage return", text = "a\rb", literal = False, mlLiteral = False }
+    , { name = "a NUL", text = "a\u{0000}b", literal = False, mlLiteral = False }
+    , { name = "a DEL", text = "a\u{007F}b", literal = False, mlLiteral = False }
+    , { name = "an astral character", text = "a🎉b", literal = True, mlLiteral = True }
+    , { name = "only newlines", text = "\n\n", literal = False, mlLiteral = True }
+    , { name = "a leading newline", text = "\nfirst", literal = False, mlLiteral = True }
+    , { name = "a trailing newline", text = "last\n", literal = False, mlLiteral = True }
+    , { name = "a paragraph", text = "One line.\nAnd another.\n", literal = False, mlLiteral = True }
+    , { name = "a hash", text = "# not a comment", literal = True, mlLiteral = True }
+    , { name = "a bracket and an equals", text = "] = [", literal = True, mlLiteral = True }
+    , { name = "Japanese", text = "日本語", literal = True, mlLiteral = True }
+    ]
+
+
+{-| Write one value as the only key of a document, and read it back out. The
+whole point is that these two are not the same code path: one spells the string
+and the other parses it.
+-}
+readBack : Encode.Value -> Result String String
+readBack content =
+    Decode.fromString (Decode.field "a" Decode.string)
+        (Encode.toString [ field "a" content ])
+        |> Result.mapError Decode.errorToString
+
+
+{-| The text of a one-key document, for the tests that pin a spelling.
+-}
+written : Encode.Value -> String
+written content =
+    Encode.toString [ field "a" content ]
+
+
+{-| The rows a check failed on, described. An empty array is the pass.
+-}
+failures : (Body -> Maybe String) -> Array String
+failures check =
+    bodies
+        |> Array.mapAndKeepJust
+            (\body ->
+                check body
+                    |> Maybe.map (\why -> body.name ++ ": " ++ why)
+            )
+
+
+{-| Whether writing this text with `build` gives it back again.
+-}
+survives : (String -> Encode.Value) -> Body -> Maybe String
+survives build body =
+    when readBack (build body.text) is
+        Ok found ->
+            if found == body.text then
+                Nothing
+
+            else
+                Just ("read back as " ++ escaped found)
+
+        Err error ->
+            Just error
+
+
+{-| A string with its own control characters made visible, so that a failure
+message about a newline is readable in a terminal.
+-}
+escaped : String -> String
+escaped text =
+    String.foldl
+        (\char acc ->
+            when char is
+                '\n' ->
+                    acc ++ "\\n"
+
+                '\r' ->
+                    acc ++ "\\r"
+
+                '\t' ->
+                    acc ++ "\\t"
+
+                _ ->
+                    String.pushLast char acc
+        )
+        ""
+        text
+
+
+{-| -}
+writingSuite : U.Suite
+writingSuite =
+    U.suite
+        { name = "Writing"
+        , setUpSuite = U.noSuiteFixture
+        , tearDownSuite = U.noTearDown
+        , setUp = \_ -> Task.succeed {}
+        , tearDown = U.noTearDown
+        , tests =
+            -- A table that came out empty would pass everything below it.
+            [ U.test "there are bodies to write" <| \_ ->
+                Task.succeed (Expect.equal 26 (Array.length bodies))
+            -- THE FOUR FORMS, EACH ONE WRITTEN AND READ BACK
+            , U.test "every body survives being written as a basic string" <| \_ ->
+                Task.succeed (Expect.equal [] (failures (survives Encode.string)))
+            , U.test "every body survives being written as a multi-line basic string" <| \_ ->
+                Task.succeed (Expect.equal [] (failures (survives Encode.multilineString)))
+            , U.test "a literal string holds what it can hold and refuses the rest" <| \_ ->
+                Task.succeed
+                    (Expect.equal []
+                        (failures
+                            (\body ->
+                                when { wanted = body.literal, built = Encode.literalString body.text } is
+                                    { wanted = True, built = Just content } ->
+                                        survives (\_ -> content) body
+
+                                    { wanted = True, built = Nothing } ->
+                                        Just "refused, and it should not have been"
+
+                                    { wanted = False, built = Just _ } ->
+                                        Just "written, and it should have been refused"
+
+                                    { wanted = False, built = Nothing } ->
+                                        Nothing
+                            )
+                        )
+                    )
+            , U.test "a multi-line literal string, likewise" <| \_ ->
+                Task.succeed
+                    (Expect.equal []
+                        (failures
+                            (\body ->
+                                when { wanted = body.mlLiteral, built = Encode.multilineLiteralString body.text } is
+                                    { wanted = True, built = Just content } ->
+                                        survives (\_ -> content) body
+
+                                    { wanted = True, built = Nothing } ->
+                                        Just "refused, and it should not have been"
+
+                                    { wanted = False, built = Just _ } ->
+                                        Just "written, and it should have been refused"
+
+                                    { wanted = False, built = Nothing } ->
+                                        Nothing
+                            )
+                        )
+                    )
+            -- THE SPELLINGS, PINNED
+            , U.test "a multi-line string opens with a newline, which the reader trims" <| \_ ->
+                Task.succeed
+                    (Expect.equal "a = \"\"\"\nOne line.\nAnd another.\n\"\"\"\n"
+                        (written (Encode.multilineString "One line.\nAnd another.\n"))
+                    )
+            , U.test "a newline and a tab go in as themselves, and a backslash does not" <| \_ ->
+                Task.succeed
+                    (Expect.equal "a = \"\"\"\nleft\tright\nC:\\\\Users\n\"\"\"\n"
+                        (written (Encode.multilineString "left\tright\nC:\\Users\n"))
+                    )
+            , U.test "one or two quotes are content; the third of a run is escaped" <| \_ ->
+                Task.succeed
+                    (Expect.equal "a = \"\"\"\none \" two \"\" three \"\"\\\"\n\"\"\"\n"
+                        (written (Encode.multilineString "one \" two \"\" three \"\"\"\n"))
+                    )
+            , U.test "and so is one that would land against the closing delimiter" <| \_ ->
+                Task.succeed
+                    (Expect.equal "a = \"\"\"\nends with \\\"\"\"\"\n"
+                        (written (Encode.multilineString "ends with \""))
+                    )
+            , U.test "a carriage return stays an escape, so a newline in the file is always \\n" <| \_ ->
+                Task.succeed
+                    (Expect.equal "a = \"\"\"\nleft\\r\nright\"\"\"\n"
+                        (written (Encode.multilineString "left\r\nright"))
+                    )
+            , U.test "a literal string is the text, untouched, between apostrophes" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Just "a = 'C:\\Users\\note\t\"quoted\"'\n")
+                        (Maybe.map written (Encode.literalString "C:\\Users\\note\t\"quoted\""))
+                    )
+            , U.test "and a multi-line literal one opens with a newline too" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Just "a = '''\nit's \\n, verbatim\n'''\n")
+                        (Maybe.map written (Encode.multilineLiteralString "it's \\n, verbatim\n"))
+                    )
+            , U.test "the basic form has not changed and is still one line" <| \_ ->
+                Task.succeed
+                    (Expect.equal "a = \"one\\ttwo\\nthree\"\n"
+                        (written (Encode.string "one\ttwo\nthree"))
+                    )
+            -- WHERE Toml.Encode PUTS A BLOCK
+            , U.test "a block under a header, in an array and in an inline table all read back" <| \_ ->
+                Task.succeed
+                    (Expect.equal (Ok [ "one\ntwo\n", "in an array\n", "in a table\n" ])
+                        (Decode.fromString
+                            (Decode.map3 (\a b c -> [ a, b, c ])
+                                (Decode.at [ "notes", "long" ] Decode.string)
+                                (Decode.field "list" (Decode.array Decode.string)
+                                    |> Decode.map (String.join "")
+                                )
+                                (Decode.at [ "point", "label" ] Decode.string)
+                            )
+                            (Encode.toString
+                                [ field "list" (Encode.array [ Encode.multilineString "in an array\n" ])
+                                , field "point"
+                                    (Encode.inlineTable
+                                        [ field "label" (Encode.multilineString "in a table\n") ]
+                                    )
+                                , field "notes"
+                                    (Encode.table
+                                        [ field "long" (Encode.multilineString "one\ntwo\n") ]
+                                    )
+                                ]
+                            )
+                            |> Result.mapError Decode.errorToString
+                        )
+                    )
+            , U.test "and the block a header holds is laid out the way a person would type it" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (String.join "\n"
+                            [ "[notes]"
+                            , "long = \"\"\""
+                            , "one"
+                            , "two"
+                            , "\"\"\""
+                            , ""
+                            ]
+                        )
+                        (Encode.toString
+                            [ field "notes"
+                                (Encode.table [ field "long" (Encode.multilineString "one\ntwo\n") ])
+                            ]
+                        )
+                    )
+            -- AND WHAT Toml.Edit DOES WITH ONE
+            , U.test "setting a multi-line string on a new key writes the block" <| \_ ->
+                Task.succeed
+                    (Expect.equal "a = 1\nnote = \"\"\"\none\ntwo\n\"\"\"\n"
+                        (Toml.parse "a = 1\n"
+                            |> Result.map (Edit.set [ "note" ] (Edit.multilineString "one\ntwo\n"))
+                            |> Result.map Toml.toString
+                            |> Result.withDefault "did not parse"
+                        )
+                    )
+            , U.test "but a value the file already means is not re-spelled" <| \_ ->
+                Task.succeed
+                    (Expect.equal "note = \"one\\ntwo\\n\"\n"
+                        (Toml.parse "note = \"one\\ntwo\\n\"\n"
+                            |> Result.map (Edit.set [ "note" ] (Edit.multilineString "one\ntwo\n"))
+                            |> Result.map Toml.toString
+                            |> Result.withDefault "did not parse"
+                        )
+                    )
+            ]
+        }

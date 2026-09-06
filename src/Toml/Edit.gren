@@ -11,10 +11,13 @@ module Toml.Edit exposing
     , inlineTable
     , int
     , introduce
+    , literalString
     , localDate
     , localDateTime
     , localTime
     , member
+    , multilineLiteralString
+    , multilineString
     , offsetDateTime
     , paths
     , remove
@@ -301,7 +304,8 @@ read from a file has no text of its own yet. They are
 rather than two, and shared with [`Toml.Encode`](Toml-Encode) so that the two
 cannot disagree about how to spell a float.
 
-@docs string, int, bigInt, float, bigDecimal, bool
+@docs string, multilineString, literalString, multilineLiteralString
+@docs int, bigInt, float, bigDecimal, bool
 @docs offsetDateTime, localDateTime, localDate, localTime
 @docs array, inlineTable
 
@@ -1702,11 +1706,53 @@ styleOf document =
 -- VALUES
 
 
-{-| A string.
+{-| A string, written as a basic one: `"..."` on one line.
 -}
 string : String -> Value
 string =
     Literal.string
+
+
+{-| A string, written as a multi-line one: `"""..."""`, with the newlines in it
+written as themselves rather than as `\n`.
+
+The form for a value a person is meant to read: a note, a key, a query. Every
+string can be written this way, so this never fails.
+
+**Setting a value the file already means changes nothing**, spelling included --
+see [`set`](#set). A key that already says this in a basic string keeps the
+basic string; the form is chosen when the key is first written.
+
+-}
+multilineString : String -> Value
+multilineString =
+    Literal.multilineString
+
+
+{-| A string, written as a literal one: `'...'`, with no escapes at all.
+
+`Nothing` when the string has an apostrophe, a newline, or a control character
+other than tab in it, since a literal string has no way to spell those. It does
+not fall back to another form: which form a key is written in should not depend
+on what the value happens to contain.
+
+-}
+literalString : String -> Maybe Value
+literalString =
+    Literal.literalString
+
+
+{-| A string, written as a multi-line literal one: `'''...'''`: no escapes, and
+the newlines written as themselves.
+
+`Nothing` when the string cannot be spelled that way -- three apostrophes in a
+row, an apostrophe at the very end, a lone carriage return, or a control
+character other than tab and newline.
+
+-}
+multilineLiteralString : String -> Maybe Value
+multilineLiteralString =
+    Literal.multilineLiteralString
 
 
 {-| An integer that fits in a Gren `Int`.
