@@ -647,17 +647,18 @@ flatten content =
 -- SCALARS
 
 
-{-| A string, written as a basic one: `"..."` on one line.
+{-| A string, written in the basic form: `"..."` on one line, with `\n` for a
+newline.
 -}
 string : String -> Value
 string text =
     Scalar (Literal.string text)
 
 
-{-| A string, written as a multi-line one: `"""..."""`, with the newlines in it
-written as themselves rather than as `\n`.
+{-| A string, written in the multi-line form: `"""..."""`, with the newlines in
+it written as real line breaks rather than as `\n`.
 
-The form for a value a person is meant to read, and the one worth reaching for
+This is the form to use for text a person will read, and the one to reach for
 when a file this module writes has a paragraph in it. Every string can be
 written this way, so this never fails.
 
@@ -667,12 +668,12 @@ multilineString text =
     Scalar (Literal.multilineString text)
 
 
-{-| A string, written as a literal one: `'...'`, with no escapes at all.
+{-| A string, written in the literal form: `'...'`, with no escapes at all.
 
-`Nothing` when the string has an apostrophe, a newline, or a control character
-other than tab in it, since a literal string has no way to spell those. It does
-not fall back to another form: which form a key is written in should not depend
-on what the value happens to contain.
+Returns `Nothing` if the string contains an apostrophe, a newline, or a control
+character other than tab, because a literal string has no way to write those.
+It does not fall back to another form: the form a key is written in should not
+depend on what the value happens to contain.
 
 -}
 literalString : String -> Maybe Value
@@ -680,11 +681,11 @@ literalString text =
     Maybe.map Scalar (Literal.literalString text)
 
 
-{-| A string, written as a multi-line literal one: `'''...'''`: no escapes, and
-the newlines written as themselves.
+{-| A string, written in the multi-line literal form: `'''...'''`, with no
+escapes and with the newlines written as real line breaks.
 
-`Nothing` when the string cannot be spelled that way -- three apostrophes in a
-row, an apostrophe at the very end, a lone carriage return, or a control
+Returns `Nothing` if the string cannot be written that way: three apostrophes
+in a row, an apostrophe at the very end, a lone carriage return, or a control
 character other than tab and newline.
 
 -}

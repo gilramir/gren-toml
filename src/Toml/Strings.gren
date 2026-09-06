@@ -12,7 +12,7 @@ module Toml.Strings exposing
     , value
     )
 
-{-| TOML's four kinds of string literal, in both directions.
+{-| Reading and writing TOML's four kinds of string literal.
 
 [`value`](#value) takes the whole literal, delimiters included, and gives back
 the string or nothing. It is where escapes are resolved, where the newline
@@ -626,22 +626,24 @@ characters the grammar does not allow unescaped. Everything else goes in as
 itself, so a string of Japanese comes out as Japanese rather than as a row of
 `\u` escapes.
 
-The multiline flag is the same one `unescape` takes below, and it turns
-on the same three things from the other side. A newline and a tab are written as
-themselves rather than as `\n` and `\t`, which is the whole reason for asking
-for this form. A quote no longer has to be escaped -- one or two of them in a
-row are content -- so only the third of a run is, and so is one that would
-otherwise end the body against the closing delimiter. And the literal opens with
-a newline the reader will trim, which costs nothing and starts the first line of
-the body in column 1.
+The multiline flag is the same one `unescape` takes, and it changes the same
+three things from the other side:
 
-A carriage return stays `\r` even here. A newline in the output is then always
-`\n`, and a CRLF in the value comes back as a CRLF rather than as whatever the
-file around it happens to use.
+  - A newline and a tab are written as themselves rather than as `\n` and
+    `\t`. This is the whole reason to ask for the multi-line form.
+  - A quote no longer has to be escaped, since one or two in a row are
+    content. Only the third quote of a run is escaped, and so is a quote that
+    would otherwise sit against the closing delimiter.
+  - The literal opens with a newline, which the reader trims. It costs nothing
+    and starts the first line of the body in column 1.
 
-This is the inverse of [`value`](#value) for the two quoted kinds, and it is
-only ever needed for a value that was not read from a file -- one that was is
-written back from the text it came with.
+A carriage return is still written as `\r`. That way every newline in the
+output is `\n`, and a CRLF in the value comes back as a CRLF rather than as
+whatever line ending the rest of the file uses.
+
+This is the inverse of [`value`](#value) for the two quoted forms. It is only
+needed for a value that was not read from a file; one that was is written back
+from the text it came with.
 
 -}
 escape : { multiline : Bool } -> String -> String
@@ -658,9 +660,9 @@ escape options text =
 
 {-| The body of a `"""` literal.
 
-`bare` is how many unescaped quotes have just been written. A third in a row
-would be the closing delimiter, and so would one left against the end of the
-body, so those two are the quotes that get a backslash and nothing else does.
+`bare` counts the unescaped quotes just written. A third quote in a row would
+close the literal, and so would a quote left at the very end of the body, so
+those two get a backslash and no other quote does.
 
 -}
 mlEscaped : Array Char -> Int -> Int -> String -> String
@@ -681,7 +683,7 @@ mlEscaped chars index bare acc =
                 mlEscaped chars (index + 1) 0 (acc ++ mlEscapeChar char)
 
 
-{-| A character of a `"""` body. The newline and the tab are the two that a
+{-| One character of a `"""` body. Newline and tab are the two characters a
 multi-line string may hold as themselves; everything else is escaped exactly as
 it would be in a basic string.
 -}
@@ -698,8 +700,8 @@ mlEscapeChar char =
             escapeChar char
 
 
-{-| A literal-string literal, delimiters included, or nothing when the string
-cannot be spelled as one.
+{-| A literal-string literal, delimiters included, or `Nothing` when the string
+cannot be written as one.
 
     Toml.Strings.literal { multiline = False } "C:\\Users"
     --> Just "'C:\\Users'"
@@ -707,15 +709,14 @@ cannot be spelled as one.
     Toml.Strings.literal { multiline = False } "it's"
     --> Nothing
 
-A literal string has no escapes at all, which is what makes it worth having and
-what makes this a `Maybe`: an apostrophe, a newline or a control character in a
-`'...'` simply cannot be written, and there is no spelling to fall back on
-without changing which form the caller asked for.
+A literal string has no escapes at all. That is what makes the form useful, and
+it is also why this returns a `Maybe`: an apostrophe, a newline or a control
+character cannot be written inside `'...'`, and there is no way around that
+without switching to a form the caller did not ask for.
 
-The multiline flag allows the newline -- and the tab, which the single-line form
-allows too -- and allows runs of one or two apostrophes. A run of three would be
-the closing delimiter, and so would a run left against the end of the body, so
-both of those are refused rather than written and hoped for.
+The multiline flag allows newlines (tabs are allowed in both forms) and allows
+runs of one or two apostrophes. A run of three would close the literal, and so
+would a run at the very end of the body, so both of those are refused.
 
 -}
 literal : { multiline : Bool } -> String -> Maybe String
@@ -734,7 +735,8 @@ literal options text =
         Nothing
 
 
-{-| Whether a string can be the body of a `'''` literal, written as it stands.
+{-| Whether a string can be the body of a `'''` literal, written exactly as it
+is.
 -}
 isMlLiteralBody : Array Char -> Int -> Bool
 isMlLiteralBody chars index =

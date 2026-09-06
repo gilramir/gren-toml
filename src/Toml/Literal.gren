@@ -31,9 +31,9 @@ The choices are the plain ones: a bare key when the grammar allows and a quoted
 one when it does not, decimal for integers, and only the escapes a string
 actually needs.
 
-Which of TOML's four string forms to write is a choice too, and it is the
-caller's rather than this module's: [`string`](#string) is always `"..."`, and
-the other three forms have a constructor each.
+Which of TOML's four string forms to write is also a choice, and it is the
+caller's rather than this module's: [`string`](#string) always writes `"..."`,
+and each of the other three forms has its own constructor.
 
     Toml.Literal.string "10.0.0.1"      -- ip = "10.0.0.1"
     Toml.Literal.int 8000               -- ports = [8000]
@@ -116,13 +116,12 @@ simpleKey name =
 -- VALUES
 
 
-{-| A string, written as a basic one: `"..."`, on one line, with `\n` for a
+{-| A string, written in the basic form: `"..."` on one line, with `\n` for a
 newline.
 
-This is what a caller who has not thought about which form they want should
-get, and it is what they have always got, so it does not change with the wind.
-A string with newlines in it is better off as
-[`multilineString`](#multilineString), but that is for the caller to say.
+This is the default, and it is what callers have always got, so it will not
+change. A string with newlines in it reads better as
+[`multilineString`](#multilineString), but that is the caller's choice.
 
 -}
 string : String -> Value
@@ -130,19 +129,18 @@ string text =
     StringVal { raw = Strings.escape { multiline = False } text, value = text }
 
 
-{-| A string, written as a multi-line basic one: `"""..."""`, opening with a
-newline the reader trims, with the newlines and tabs in it written as
-themselves.
+{-| A string, written in the multi-line basic form: `"""..."""`. The literal
+opens with a newline, which the reader trims, and the newlines and tabs in the
+text are written as themselves.
 
-Every string can be written this way -- the escapes are all still available
-inside `"""` -- so this one never fails. It is the form for a value with lines
-in it, which is to say a note, a key, a query, or anything else that a program
-put in a config file for a person to read.
+Every string can be written this way, because all the escapes still work
+inside `"""`, so this never fails. It is the form for text with lines in it: a
+note, a query, anything a program puts in a config file for a person to read.
 
 **A value that is already in the file is not re-spelled.**
-[`Toml.Edit.set`](Toml-Edit#set) compares by meaning, and a basic string
-already saying what this one says is left exactly as it was written. The form
-is chosen when the key is written, not on every save.
+[`Toml.Edit.set`](Toml-Edit#set) compares by meaning, so a basic string that
+already says the same thing is left as it was written. The form is chosen when
+the key is first written, not on every save.
 
 -}
 multilineString : String -> Value
@@ -150,17 +148,16 @@ multilineString text =
     StringVal { raw = Strings.escape { multiline = True } text, value = text }
 
 
-{-| A string, written as a literal one: `'...'`, with no escapes at all.
+{-| A string, written in the literal form: `'...'`, with no escapes at all.
 
-`Nothing` when the string cannot be written that way, which is an apostrophe, a
-newline, or a control character other than tab. A literal string has no escapes
--- that is the point of it, and it is why this cannot always be done.
+Returns `Nothing` if the string contains an apostrophe, a newline, or a control
+character other than tab. A literal string has no escapes, which is the point
+of the form and also why it cannot always be written.
 
-It does not quietly write another form instead. A constructor whose output form
-depended on its data would be one that changed the shape of a key between two
-saves because somebody typed an apostrophe, and a noisy diff is the thing this
-package is against. A caller who would
-rather have a basic string than nothing can say so, and it reads as what it is:
+It does not quietly write another form instead. If it did, the form of a key
+would depend on its value, and a key could change shape between two saves
+because somebody typed an apostrophe. A caller who would rather have a basic
+string than nothing can say so in one line:
 
     Maybe.withDefault (Toml.Literal.string text)
         (Toml.Literal.literalString text)
@@ -172,11 +169,11 @@ literalString text =
         |> Maybe.map (\raw -> StringVal { raw = raw, value = text })
 
 
-{-| A string, written as a multi-line literal one: `'''...'''`, with no escapes
-and with the newlines in it written as themselves.
+{-| A string, written in the multi-line literal form: `'''...'''`, with no
+escapes and with the newlines written as themselves.
 
-`Nothing` when the string cannot be written that way: a run of three
-apostrophes, a run of them at the very end where the closing delimiter goes, a
+Returns `Nothing` if the string cannot be written that way: three apostrophes
+in a row, an apostrophe at the very end where the closing delimiter goes, a
 lone carriage return, or a control character other than tab and newline. As
 with [`literalString`](#literalString), no other form is written in its place.
 

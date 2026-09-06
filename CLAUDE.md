@@ -136,15 +136,16 @@ by text -- `0x1F` equals `31`, `1.50` equals `1.5`.
 of that type will always compare unequal and `set` will quietly go back to
 rewriting them. The fall-through is `_ -> False`, so nothing complains.
 
-`respell` is `set` with the comparison taken out, and `respellAt` is `setAt`
-the same way. They exist so that the comparison never has to be weakened. Changing `sameValue` to compare the
-*spelling* as well as the meaning would look like a small fix for "my program
-switched to `multilineString` and old files keep the old form", and it would
-reverse who wins on every save: the program's form would beat the user's, in
-arrays and inline tables too, since `sameValue` recurses -- so a user who
-rewrote one element as `'a literal string'` would have their whole
-hand-arranged array flattened by a save about some other key. Keep the default
-comparison by meaning; the caller who means to change a spelling says so.
+`respell` is `set` without the comparison, and `respellAt` is `setAt` without
+it. They exist so that the comparison never has to be weakened. It is tempting
+to make `sameValue` compare the *spelling* as well as the meaning, as a small
+fix for "my program switched to `multilineString` and old files keep the old
+form". That would reverse who wins on every save: the program's form would beat
+the user's, and in arrays and inline tables too, since `sameValue` recurses. A
+user who rewrote one element as `'a literal string'` would have their whole
+hand-arranged array flattened by a save that was about some other key. Keep the
+default comparison by meaning. A caller who means to change a spelling says so
+by calling `respell`.
 
 `introduce` is `set` plus `setComments` for a key that was not there. The "was
 not there" is the whole of it: writing the comments unconditionally would
@@ -153,58 +154,60 @@ saved.
 
 ## The four string forms are chosen in one place
 
-`Toml.Strings.escape` and `Toml.Strings.literal` are the writing side, and each
-takes the `{ multiline : Bool }` that `unescape` and `verbatim` take on the
-reading side. `Toml.Literal` is their only caller; `Toml.Edit` and `Toml.Encode`
-are two more names for what it does. A new spelling goes there, never in a
-caller.
+`Toml.Strings.escape` and `Toml.Strings.literal` are the writing side. Each
+takes the same `{ multiline : Bool }` that `unescape` and `verbatim` take on
+the reading side. `Toml.Literal` is their only caller, and `Toml.Edit` and
+`Toml.Encode` re-export what it does. A new spelling goes in `Toml.Literal`,
+never in a caller.
 
-**`string` writes a basic string and has to go on writing one.** Changing which
-form it picks would move the output of every program already using it, on the
-next save, for a library whose whole promise is that the file comes back the way
-it was left. A new form gets a new constructor.
+**`string` writes a basic string and must keep doing so.** Changing which form
+it picks would change the output of every program already using it on its next
+save, in a library whose whole promise is that the file comes back the way it
+was left. A new form gets a new constructor.
 
 `literalString` and `multilineLiteralString` return a `Maybe` because `'...'`
-has no escapes and genuinely cannot spell an apostrophe. Do not "help" by
-falling back to a basic string: a constructor whose output form depends on its
+has no escapes and genuinely cannot hold an apostrophe. Do not "help" by
+falling back to a basic string. A constructor whose output form depends on its
 data is one that changes the shape of a key between two saves because somebody
 typed an apostrophe.
 
-None of this reaches `Toml.Ast` -- which of the four a value is written as is
-recoverable from `raw` through `Strings.kindOf` -- so `Toml.Write` has nothing
-to learn and the round trip has nothing to say about it. The `Writing` suite is
-what does: it writes each of 26 awkward bodies, parses it back and compares,
-because a `raw` the parser would reject makes a document that fails later, in
-`Toml.Table.fromDocument`, rather than where it was written.
+None of this reaches `Toml.Ast`. Which of the four forms a value uses is
+recoverable from `raw` through `Strings.kindOf`, so `Toml.Write` has nothing to
+learn and the round-trip suite has nothing to say about it. The `Writing` suite
+is what checks it: it writes each of 26 awkward strings, parses the result back
+and compares. That matters because a `raw` the parser would reject does not
+fail where it was written; it makes a document that fails later, in
+`Toml.Table.fromDocument`.
 
-## An array element's note is not where it looks like it is
+## An array element's comment is not stored where it looks like it is
 
 `appendTo`, `setAt` and `removeAt` change one element and leave the rest of the
-array's text alone. Two pieces of trivia decide whether that works, and neither
-of them sits under the element it belongs to:
+array's text alone. Two details of the AST decide whether that works, and in
+both the text is stored somewhere other than under the element it belongs to:
 
-- the note written after an element's comma lives in the **next** element's
-  `before` -- and in the array's `trailing` for the last element;
-- when the last element has **no comma**, everything between it and the `]` --
-  the space in `[ 1, 2 ]`, but also a note and the newline after it -- lives in
-  that element's **`after`**, and `trailing` is empty. The parser's `Done`
-  branch for a bare last element says so.
+- the comment written after an element's comma is stored in the **next**
+  element's `before`, and for the last element in the array's `trailing`;
+- when the last element has **no comma**, everything between it and the `]` is
+  stored in that element's **`after`**, and `trailing` is empty. That includes
+  the space in `[ 1, 2 ]`, but also a comment and the newline after it. The
+  parser's `Done` branch for a bare last element is where this happens.
 
-The convention that follows from the first: everything up to and including the
-first `Break` of a boundary belongs to the line above it, and everything after
-that is the next element's indent. `upToFirstBreak` and `afterFirstBreak` are
-the whole of the arithmetic.
+The convention that follows from the first point: everything up to and
+including the first `Break` of a boundary belongs to the line above it, and
+everything after that is the next element's indent. `upToFirstBreak` and
+`afterFirstBreak` are the whole of the arithmetic.
 
-The second is why `appended` and `removedFrom` read `last.after ++ trailing` as
-**one boundary** and never look at either field on its own. The first version
-looked at them separately, treated `after` as if it could only hold a space,
-and on `2 # two` with no comma it copied the previous element's note onto the
-new element and moved `# two` onto it as well; `removeAt` left the removed
-element's note on the survivor. The `noted` and `closed` arrays in the Editing
-fixture are the two shapes that catch this. `closingOf` is what goes back in
-front of the bracket once a note has moved up: the line ending is kept even
-though the note took one with it, because the element the note moved to now
-ends that line and the `]` still needs its own.
+The second point is why `appended` and `removedFrom` join `last.after` and
+`trailing` and treat the result as **one boundary**, never looking at either
+field alone. The first version looked at them separately and assumed `after`
+could only hold a space. On `2 # two` with no comma, it copied the previous
+element's comment onto the new element and moved `# two` onto it as well, and
+`removeAt` left the removed element's comment on the survivor. The `noted` and
+`closed` arrays in the Editing fixture are the two shapes that catch this.
+`closingOf` is what goes back in front of the bracket once a comment has moved
+up. It keeps the line ending even though the comment took one with it, because
+the element the comment moved to now ends that line and the `]` still needs
+its own.
 
 **`Array.get -1` in Gren is the last element**, so `elementAt` guards
 `index < 0`. Without it, `setAt path -1` would quietly change the last element.
@@ -288,8 +291,8 @@ say whether it was safe to.
 ## Tests
 
 `tests/src/Writing.gren` is the hand-written counterpart to the generated
-`Literals.gren`: that one is every string literal in the corpus read, this one
-is every form written. It is where a new spelling rule belongs.
+`Literals.gren`. That one reads every string literal in the corpus; this one
+writes every form. A new spelling rule gets its test here.
 
 `tests/src/Numbers.gren` and `tests/src/Literals.gren` are **generated** by
 `tools/gen-numbers.py` and `tools/gen-strings.py` — or both at once, with

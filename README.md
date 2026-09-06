@@ -412,15 +412,15 @@ because the program was saving some other key. The comparison is by value and
 not by text: `0x1F` and `31` are the same integer, `1.50` and `1.5` the same
 number, so nothing is rewritten to say what it already said.
 
-`respell` is `set` without that rule: it writes the value whether or not the
-file already means it, so the *spelling* changes and not only the value, and the
-key keeps its comments and its place in the file. It is a separate function
-rather than a flag because the rule is worth keeping on by default — a program
-that writes a spelling unconditionally on every save is one that turns the
-user's own `'C:\Users'` back into a basic string, over and over. Use it for it
-on the one key you mean to change: a value your program used to write with
-`string` and now writes with `multilineString`, where `set` would leave every
-file the older version wrote spelled the old way.
+`respell` is `set` without that rule. It writes the value whether or not the
+file already means it, so it changes how the value is *written*, and the key
+keeps its comments and its place in the file. It is a separate function rather
+than a flag on `set` because the rule is worth keeping on by default: a program
+that rewrote spellings on every save would turn a user's own `'C:\Users'` back
+into a basic string every time. Use `respell` on the one key you mean to
+change. The usual case is a value your program used to write with `string` and
+now writes with `multilineString`, where `set` would leave every file written
+by the older version spelled the old way.
 
 The value can be an array or an inline table as well as a scalar — `array` and
 `inlineTable` write them on one line. Replacing the whole inline table is also
@@ -428,10 +428,11 @@ how to change something *inside* one, because a path stops at the brace: an
 inline table has no lines to insert into, so the boundary is drawn there rather
 than guessed at.
 
-`appendTo`, `setAt` and `removeAt` are the other half of that comparison. It
-protects a hand-arranged array right up until the array actually changes, and
-then `set` has a new array to write and no old formatting to keep. These three
-change one element and leave the line, the indent and the notes as they were:
+`appendTo`, `setAt` and `removeAt` fill the gap that comparison leaves. It
+protects a hand-arranged array until the array actually changes, and at that
+point `set` has a new array to write and no old formatting to keep. These three
+change one element and leave the line breaks, the indentation and the comments
+of the others as they were:
 
 ```gren
 Toml.Edit.appendTo [ "zones" ] (Toml.Edit.string "Europe/Oslo")
@@ -446,21 +447,22 @@ zones = [
 ]
 ```
 
-The new element copies the shape of the boundary in front of it — the newline
-and the indent, or a space after the comma on a one-line array — and takes the
-trailing comma the last element had, or leaves it off if that one did not have
-one. A key that is not there yet becomes a one-element array, so "add this to my
-list" is the same code on a file that does not exist.
+The new element is laid out like the one before it: on its own line with the
+same indent, or after a space if the array is on one line. It gets a trailing
+comma if the last element had one, and no comma if it did not. A key that is
+not there yet becomes a one-element array, so "add this to my list" is the same
+code whether or not the file has the list already.
 
-`setAt` compares before it writes, the way `set` does, and `respellAt` is the
-one that writes anyway — the same pair, for one element rather than the whole
-key.
+`setAt` compares before it writes, the way `set` does, and `respellAt` writes
+anyway. They are the same pair as `set` and `respell`, for one element instead
+of the whole key.
 
-`removeAt` takes the note that belongs to the element with it, by a convention
-of the same kind as the one for keys: **a comment after an element's comma, up
-to the end of that line, is that element's**, and everything after that line
-ending is the next element's indent. Both take an index, and a negative one is
-out of range rather than counted from the end.
+`removeAt` takes the element's comment with it. Which comment belongs to which
+element is a convention of the same kind as the one for keys: **a comment after
+an element's comma, up to the end of that line, belongs to that element**, and
+everything after that line ending is the next element's indent. `setAt` and
+`removeAt` both take an index, and a negative one is out of range rather than
+counted from the end.
 
 A path into an array of tables names its last item, which is the item TOML
 itself means by `[peer.tls]` or `peer.x = 1` after the second `[[peer]]`.
@@ -579,10 +581,10 @@ and brackets. Fields come out in the order you gave them — except that a table
 own keys are written before its sections, because a key written after a
 `[header]` would land inside that header's table instead.
 
-You choose the string form too. `string` writes a basic string — `"..."` on one
-line, with `\n` for a newline — and always will, so no program's output moves
-under it. A value with lines in it wants `multilineString`, which writes a
-`"""` block:
+You choose the string form too. `string` writes a basic string, `"..."` on one
+line with `\n` for a newline, and it always will, so no program's output
+changes under it. A value with lines in it reads better as `multilineString`,
+which writes a `"""` block:
 
 ```gren
 Toml.Encode.field "notes"
@@ -597,12 +599,13 @@ And another.
 ```
 
 `literalString` and `multilineLiteralString` write the two forms that have no
-escapes at all, `'...'` and `'''...'''`, and they return a `Maybe`: an
-apostrophe cannot go inside `'...'` by any spelling, and quietly writing some
-other form instead would mean a key changing shape between two saves because
-somebody typed one. `Maybe.withDefault` onto another form is one line and says
-so out loud. `Toml.Edit` has the same four constructors, and `Toml.Literal` is
-where all of them come from.
+escapes at all, `'...'` and `'''...'''`. Both return a `Maybe`, because an
+apostrophe cannot be written inside `'...'` at all, and quietly writing some
+other form instead would let a key change shape between two saves because
+somebody typed one. Falling back to another form is one line with
+`Maybe.withDefault`, and then the choice is visible in your code. `Toml.Edit`
+has the same four constructors, and `Toml.Literal` is where all of them come
+from.
 
 ## Two layers, and you pick
 
@@ -663,15 +666,15 @@ Everything is checked against the official
 [toml-test](https://github.com/toml-lang/toml-test) suite, filtered to the
 1.1.0 manifest, read off the disk at run time.
 
-**Which TOML 1.1**, since the answer has moved before: the one in
-`vendor/toml-test/tests/files-toml-1.1.0`, at the commit that submodule is
-pinned to — `bc8f2c2`, `v2.2.0-16-gbc8f2c2`. Against the 1.0.0 manifest beside
-it, that adds `\x` and `\e` escapes, newlines and trailing commas inside inline
-tables, and seconds made optional in times and date-times, and it settles that a
-lone carriage return inside a multi-line string is invalid. It does **not** add
-the Unicode bare keys that were proposed for 1.1 and taken back out before it
-was released; `a-b_1` is still the whole of an unquoted key. The submodule is
-pinned so that this paragraph cannot quietly stop being true.
+**Which TOML 1.1?** The answer has moved before, so to be exact: the one in
+`vendor/toml-test/tests/files-toml-1.1.0` at the commit the submodule is pinned
+to, `bc8f2c2` (`v2.2.0-16-gbc8f2c2`). Compared with the 1.0.0 manifest beside
+it, that version adds `\x` and `\e` escapes, newlines and trailing commas inside
+inline tables, and optional seconds in times and date-times, and it settles
+that a lone carriage return inside a multi-line string is invalid. It does
+**not** add the Unicode bare keys that were proposed for 1.1 and withdrawn
+before release; an unquoted key is still just `a-b_1`. The submodule is pinned
+so that this paragraph stays true.
 
 | | |
 | --- | --- |

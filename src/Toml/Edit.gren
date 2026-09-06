@@ -838,8 +838,8 @@ The comparison is by value and not by text. A string is its characters after
 escapes, an integer or float is its number whatever base or spelling it was
 written in, a date-time is the instant and the offset, an array is its elements
 in order, and an inline table is its entries in order. So `set` over `0x1F` with
-`int 31` changes nothing and the file keeps saying `0x1F`. To change the
-spelling rather than the value, there is [`respell`](#respell).
+`int 31` changes nothing and the file keeps saying `0x1F`. To change how a
+value is written rather than what it means, use [`respell`](#respell).
 
 An edit that gives the file a meaning it cannot have -- a key under an inline
 table, say -- is not refused here. See [what this module does not
@@ -861,35 +861,32 @@ set path content document =
             insert path content document
 
 
-{-| Write a value whether or not the file already means it, so that the
-*spelling* changes and not only the value.
+{-| Write a value even when the file already means it, so that how the value
+is *written* changes.
 
     Toml.Edit.respell [ "server", "port" ] (Toml.Edit.int 31)
 
     -->  port = 31          # was: port = 0x1F
 
-[`set`](#set) with its one rule taken away. That rule -- leave a value alone
-that already says what it is being set to -- is what makes writing a whole
-configuration back safe on every save, and it is also what stops a program from
-ever changing how a value is written. This is the door for the second thing,
-and it is a separate door on purpose: a program that opens it does so on the
-one key it means to, rather than for every key it saves.
+[`set`](#set) leaves a value alone when it already means what it is being set
+to. That rule is what makes it safe to write a whole configuration back on
+every save, but it also means `set` can never change how a value is spelled.
+`respell` is `set` without that rule.
 
-The key keeps everything but its value: the comments that belong to it, the
-whitespace around the equals sign, and its place in the file. That is the
-difference between this and [`remove`](#remove) followed by `set`, which was
-the only way to do it before and takes the key's comments away with the line.
+The key keeps everything except its value: its comments, the whitespace around
+the equals sign, and its place in the file. Before this function existed the
+only way to change a spelling was [`remove`](#remove) followed by `set`, which
+loses the key's comments along with the line.
 
-What it is for, in practice, is a form a program has changed its mind about --
-a value it used to write with [`string`](#string) and now writes with
-[`multilineString`](#multilineString), where `set` would leave every file
-written by the older version spelled the old way. Use it then, and not
-in the code that saves everything: writing a spelling unconditionally on every
-save is how a user's own `'C:\Users'` gets turned back into a basic string,
-over and over, with nothing they can do to make it stick.
+Use it on the one key whose spelling you mean to change, not in the code that
+saves everything. The usual case is a program that used to write a value with
+[`string`](#string) and now writes it with
+[`multilineString`](#multilineString): `set` sees no change and leaves older
+files spelled the old way, and `respell` updates them. Calling it on every key
+on every save would undo the user's own choices, turning their `'C:\Users'`
+back into a basic string each time.
 
-On a key that is not in the document this is exactly `set`, since a value with
-no spelling in the file yet cannot be spelled differently.
+On a key that is not in the document this is the same as `set`.
 
 -}
 respell : Array String -> Value -> Document -> Document
@@ -939,8 +936,8 @@ introduce path note content document =
             |> setComments path note
 
 
-{-| Add one element to the end of the array a key holds, leaving the elements
-already in it exactly as they are written.
+{-| Add one element to the end of the array a key holds. The elements already
+in it are left exactly as they are written.
 
     Toml.Edit.appendTo [ "zones" ] (Toml.Edit.string "Europe/Oslo")
 
@@ -950,27 +947,26 @@ already in it exactly as they are written.
     -->    "Europe/Oslo",
     -->  ]
 
-[`set`](#set) can write a whole array, and that is the right thing for a list
-whose every element is new. It is the wrong thing for a list a person has
-arranged over four lines with a note against each one, because the new array has
-no formatting and the old formatting is what gets thrown away. These three
-functions are the other half: they change one element and leave the file to say
-everything else the way it said it.
+[`set`](#set) can write a whole array, and that is fine for a list where every
+element is new. But a new array has no formatting, so `set` throws away the
+line breaks, indentation and comments of a list somebody arranged by hand.
+`appendTo`, [`setAt`](#setAt) and [`removeAt`](#removeAt) change one element
+and leave the rest of the text alone.
 
-The new element copies the shape of the boundary in front of it -- the newline
-and the indent if the array has them, a space after the comma if it is on one
-line -- and takes the trailing comma the last element had, or leaves it off if
-that one did not have one.
+The new element is laid out like the one before it: on its own line with the
+same indent if the array is written that way, or after a space if the array is
+on one line. It gets a trailing comma if the last element had one, and no comma
+if it did not.
 
-A key that is not there yet is written as a one-element array, which is what
-makes "add this to my list" work on a file that does not exist. A key holding
-something that is not an array is left alone.
+If the key is not there yet, it is written as a one-element array, so "add this
+to my list" works on a file that does not have the list yet. If the key holds
+something other than an array, the document is returned unchanged.
 
-An array *inside* an inline table counts as not there, since a path stops at the
-brace: `appendTo [ "a", "b" ]` over `a = { b = [1] }` does not reach `b`, and
-writes a `[a]` header with a new `b` under it, which is a file that
-[`Toml.Table.fromDocument`](Toml-Table#fromDocument) rejects for defining `a`
-twice. That is the same edge [`set`](#set) has, and the same way round it: replace
+An array inside an inline table counts as not there, because a path stops at
+the brace. `appendTo [ "a", "b" ]` over `a = { b = [1] }` does not reach `b`;
+it writes an `[a]` header with a new `b` under it, and
+[`Toml.Table.fromDocument`](Toml-Table#fromDocument) then rejects the file for
+defining `a` twice. `set` has the same limit, and the fix is the same: replace
 the whole inline table with [`inlineTable`](#inlineTable).
 
 -}
@@ -987,8 +983,8 @@ appendTo path content document =
             set path (array [ content ]) document
 
 
-{-| Replace one element of the array a key holds, by position, and touch nothing
-else -- not the elements around it, not the whitespace, not the notes.
+{-| Replace one element of the array a key holds, by position. Nothing else
+changes: not the elements around it, not the whitespace, not the comments.
 
     Toml.Edit.setAt [ "zones" ] 1 (Toml.Edit.string "America/Denver")
 
@@ -997,12 +993,14 @@ else -- not the elements around it, not the whitespace, not the notes.
     -->    "America/Denver", # me
     -->  ]
 
-An index that is not in the array leaves the document alone, and so does a key
-that is missing or is not an array. As with [`set`](#set), an element that
-already means what it is being set to is not rewritten: setting it would replace
-the whitespace *inside* it, and a program that writes its whole configuration
-back on every save would otherwise flatten an array it was not changing. To
-write the spelling anyway there is [`respellAt`](#respellAt).
+The document comes back unchanged if the index is out of range, the key is
+missing, or the key is not an array.
+
+Like [`set`](#set), this leaves an element alone when it already means the new
+value. Rewriting it would replace the whitespace inside it, and a program that
+writes its whole configuration back on every save would then flatten an array
+it was not changing. To rewrite the element anyway, use
+[`respellAt`](#respellAt).
 
 -}
 setAt : Array String -> Int -> Value -> Document -> Document
@@ -1019,8 +1017,8 @@ setAt path index content document =
             document
 
 
-{-| Replace one element of an array whether or not it already means what it is
-being set to, so that the *spelling* of that element changes.
+{-| Replace one element of an array even when it already means the new value,
+so that how the element is *written* changes.
 
     Toml.Edit.respellAt [ "zones" ] 1
         (Maybe.withDefault (Toml.Edit.string "America/Chicago")
@@ -1032,15 +1030,13 @@ being set to, so that the *spelling* of that element changes.
     -->    'America/Chicago', # me
     -->  ]
 
-[`setAt`](#setAt) is to this what [`set`](#set) is to [`respell`](#respell), and
-for the same reason: the comparison that leaves an unchanged value alone is
-worth keeping on by default, and changing how one element is written is the one
-thing it cannot let you do. The element keeps its line, its indent and the note
-written against it; only the value between them is rewritten.
+This is to [`setAt`](#setAt) what [`respell`](#respell) is to [`set`](#set).
+`setAt` skips an element that already means the new value, which is the right
+default but makes it unable to change a spelling. The element keeps its line,
+its indent and the comment written against it; only the value is rewritten.
 
-Unlike `respell` there is no falling back to writing the key, since a position
-in an array that is not there is not a place a value can go. An index out of
-range, a missing key or a key that is not an array all leave the document alone.
+Unlike `respell`, this never creates anything. An index out of range, a missing
+key, or a key that is not an array all leave the document unchanged.
 
 -}
 respellAt : Array String -> Int -> Value -> Document -> Document
@@ -1053,8 +1049,8 @@ respellAt path index content document =
             document
 
 
-{-| The array a key holds and one element of it, which is what both of those
-have to find before they can do anything.
+{-| The array a key holds and one element of it. `setAt` and `respellAt` both
+start by looking these up.
 -}
 elementOf :
     Array String
@@ -1071,16 +1067,16 @@ elementOf path index document =
             Nothing
 
 
-{-| The array with one element holding a different value and everything else
-about that element -- its line, its indent, its comma -- as it was.
+{-| The array with the value at one index replaced. Everything else about that
+element -- its line, its indent, its comma -- stays as it was.
 -}
 withValueAt : Int -> Value -> ArrayLit -> ArrayLit
 withValueAt index content lit =
     { lit | elements = Array.update index (\element -> { element | value = content }) lit.elements }
 
 
-{-| Take one element out of the array a key holds, by position, with the note
-that belongs to it.
+{-| Remove one element from the array a key holds, by position, along with the
+comment that belongs to it.
 
     Toml.Edit.removeAt [ "zones" ] 0
 
@@ -1088,19 +1084,19 @@ that belongs to it.
     -->    "America/Chicago", # me
     -->  ]
 
-Which note belongs to which element is a convention, the same way it is for a
-key, and this is it: **the comment after an element's comma, up to the end of
-that line, is that element's.** It is the one a person writes against the value,
-and it goes when the value goes. Everything after that line ending is the next
-element's indent and stays where it is.
+Which comment belongs to which element is a convention, as it is for keys:
+**the comment after an element's comma, up to the end of that line, belongs to
+that element.** It is the note a person writes against the value, so it goes
+when the value goes. Everything after that line ending is the next element's
+indent and stays put.
 
-The last element is the one to watch, because the two things that make the array
-close -- the trailing comma and where the `]` sits -- are written against it. The
-element before it inherits both.
+Removing the last element takes a little more care, because the trailing comma
+and the position of the `]` are both written against it. The element before it
+inherits both.
 
-An index that is not in the array leaves the document alone, and so does a key
-that is missing or is not an array. A negative one is not a position from the
-end here; it is out of range like any other.
+The document comes back unchanged if the index is out of range, the key is
+missing, or the key is not an array. A negative index is out of range; it does
+not count from the end.
 
 -}
 removeAt : Array String -> Int -> Document -> Document
@@ -1118,9 +1114,9 @@ removeAt path index document =
             document
 
 
-{-| Put an array back where it came from. The value is known to have changed --
-the three above have all looked at it already -- so this does not ask
-[`sameValue`](#sameValue) a second time.
+{-| Put an edited array back into the document. The callers above have all
+checked that the value changed, so this does not ask
+[`sameValue`](#sameValue) again.
 -}
 setArray : Array String -> ArrayLit -> Document -> Document
 setArray path lit document =
@@ -1133,8 +1129,8 @@ setArray path lit document =
             document
 
 
-{-| The element at an index, if there is one. `Array.get -1` in Gren is the last
-element, and that is not what an index out of range should mean here.
+{-| The element at an index, if there is one. `Array.get -1` in Gren returns
+the last element, which is not what an out-of-range index should do here.
 -}
 elementAt : Int -> ArrayLit -> Maybe ArrayElement
 elementAt index lit =
@@ -1147,8 +1143,8 @@ elementAt index lit =
 
 {-| The array with one more element on the end.
 
-Where an array's trivia lives, which is not under the element it looks like it
-belongs to:
+Getting this right depends on where an array's whitespace and comments are
+kept, which is not under the element they seem to belong to:
 
     zones = [
       "Asia/Seoul",   # them
@@ -1165,10 +1161,11 @@ belongs to:
     [1].comma    True
     trailing     "  # me\n"        element 1's note, then the indent of the `]`
 
-An element's note is written after its comma, so it is held by the element
-*below* it, and the last element's is held by the array. Take that last comma
-away and the tail moves again: `trailing` empties, and everything from the value
-to the `]` is in that element's own `after`.
+An element's note comes after its comma, so it is stored in the `before` of the
+element *below* it, and the last element's note is stored in the array's
+`trailing`. Take the last comma away and things move again: `trailing` becomes
+empty, and everything between the last value and the `]` is in that element's
+own `after`.
 
     zones = [
       "Asia/Seoul",   # them
@@ -1179,33 +1176,31 @@ to the `]` is in that element's own `after`.
     [1].comma    False
     trailing     ""
 
-The trivia is shown here as the text it stands for; it is really an array of
-`Spaces` and `Break`, and a `Break` is where a comment is kept -- which is why
-the arithmetic below is about the first line ending rather than about
-characters.
+The trivia is shown here as text. It is really an array of `Spaces` and `Break`
+pieces, and a comment is kept on a `Break`, which is why the code below works
+in terms of the first line ending rather than characters.
 
-The boundary the new element is written into is everything between the old last
-value and the closing bracket, and which field holds it depends on the comma:
-after `2,` it is the array's `trailing`, after a bare `2` it is that element's
-own `after`, note and newline included. The two are joined and read as one
-boundary here, so that the note against the last element cannot be treated as a
-space on one path and a comment on the other.
+The new element goes into the boundary between the old last value and the
+closing bracket. Which field holds that boundary depends on the comma: after
+`2,` it is `trailing`, after a bare `2` it is that element's `after`, note and
+newline included. This function joins the two and treats them as one boundary,
+so the last element's note is handled the same way on both paths.
 
-The new element's `before` is that boundary up to the end of its first line --
-which is where the old last element's note lives -- followed by the old last
-element's own indent, so the note stays on its line and the new value starts
-where the one above it did. Whatever came after that line stays in front of the
-bracket: an explanation written on a line of its own above the `]` is not the
-last element's, and it still wants to be last. When the boundary has no line
-ending at all, the new element copies the old last element's `before` instead,
-which is what puts it on a line of its own in a hanging-bracket array and on the
-same line in a flat one.
+The new element's `before` is the boundary up to the end of its first line,
+which is where the old last element's note lives, followed by the old last
+element's indent. So the note stays on its line, and the new value lines up
+with the one above it. Anything after that first line stays in front of the
+bracket: a comment on a line of its own above the `]` is not the last element's
+note, and it should still come last. When the boundary has no line ending at
+all, the new element copies the old last element's `before` instead, which puts
+it on a new line in an array with a hanging bracket and on the same line in a
+flat one.
 
-What is left in front of the bracket goes back into the field the comma says it
-belongs in, with the comments taken out of it if the note moved up, since a
-comment written against a value must not be left behind pointing at nothing.
-The old last element's `after` is emptied: a comma is about to be written where
-that space was, and `[ 1, 2 ]` would otherwise gain one at `2 ,`.
+What remains in front of the bracket goes back into whichever field the comma
+says it belongs in, minus any comment that moved up, so no comment is left
+pointing at a value that is no longer there. The old last element's `after` is
+emptied, because a comma is about to be written where that space was, and
+`[ 1, 2 ]` would otherwise become `[ 1, 2 , 3 ]`.
 
 -}
 appended : Value -> ArrayLit -> ArrayLit
@@ -1258,28 +1253,28 @@ appended content lit =
             }
 
 
-{-| The array with one element gone, and the boundaries either side of it joined
-back up.
+{-| The array with one element gone and the whitespace on either side of it
+joined back together.
 
-For anything but the last element, what survives is the removed element's own
-`before` up to the end of the line above it -- which carries the *previous*
-element's note -- followed by the next element's indent. On one line, where
-there is no line ending in either, that is just the separator that was in front
-of the element, which is what a person would have left there.
+For any element but the last, what survives is the removed element's own
+`before` up to the end of its first line, which carries the *previous*
+element's note, followed by the next element's indent. In a one-line array
+neither has a line ending, so what survives is just the separator that was in
+front of the removed element, which is what a person would leave there.
 
-The last element is the special one. Its note is written after it, in its own
-`after` when it had no comma and in the array's `trailing` when it did, and the
-two are read as one boundary here for the same reason [`appended`](#appended)
-reads them as one. That note goes with the element. What survives in front of
-the bracket is the previous element's own note line, from the removed element's
-`before`, followed by whatever sat below the removed element's line: an
-explanation on a line of its own above the `]`, or the bracket's indent. An
-array that ends `2 ]` has no line ending anywhere in that, and keeps just the
-space.
+The last element is the special case. Its note comes after it, in its own
+`after` if it had no comma and in the array's `trailing` if it did, and the two
+are joined and treated as one boundary here for the same reason
+[`appended`](#appended) joins them. That note goes with the element. What
+survives in front of the bracket is the previous element's note line, taken
+from the removed element's `before`, followed by whatever sat below the removed
+element's line: a comment on a line of its own above the `]`, or the bracket's
+indent. An array that ends `2 ]` has no line ending in any of that, and keeps
+just the space.
 
-The element before it takes over its comma. When that comma is not there, the
-survivors go into that element's `after`, where the bare last element of an
-array keeps them; when it is, they go into `trailing`.
+The element before the removed one inherits its comma. If there is no comma,
+the surviving whitespace goes into that element's `after`, where a bare last
+element keeps it; if there is one, it goes into `trailing`.
 
 -}
 removedFrom : Int -> ArrayLit -> Maybe ArrayLit
@@ -1336,16 +1331,15 @@ removedFrom index lit =
 
 
 {-| What sits in front of the closing bracket once the last element is gone,
-given the boundary that was in front of that element and the one that was after
-it.
+given the whitespace that was before that element and the whitespace that was
+after it.
 
-A boundary with no line ending in it is kept as it is, since it is only the
-space in `[ 1, 2 ]`. Otherwise the removed element's note line goes, and what
-remains is the previous element's note line -- the part of `before` up to its
-first line ending -- followed by whatever was written below the removed element.
-When `before` has no line ending either, the array was on one line up to its
-last element, and [`closingOf`](#closingOf) keeps the bracket on the line it
-was on.
+A boundary with no line ending is kept as it is, since it is only the space in
+`[ 1, 2 ]`. Otherwise the removed element's note line goes, and what remains is
+the previous element's note line (the part of `before` up to its first line
+ending) followed by whatever was written below the removed element. When
+`before` has no line ending either, the array was on one line up to its last
+element, and [`closingOf`](#closingOf) keeps the bracket on the line it was on.
 
 -}
 afterLast : Trivia -> Trivia -> Trivia
@@ -1360,21 +1354,23 @@ afterLast before boundary =
         closingOf boundary
 
 
-{-| What stays in front of the closing bracket once the note on the first line
-of its boundary has moved onto an element: that line's ending, with the note and
-the spaces holding it off taken out, and then everything below it as it was --
-an explanation on a line of its own, the bracket's indent, or nothing. The line
-ending is kept even though the note took one with it, because the element the
-note moved to now ends that line and the bracket still needs its own. A boundary
-with no line ending is only spaces and stays as it is.
+{-| What stays in front of the closing bracket after the note on the first line
+of its boundary has moved onto an element.
+
+The first line keeps its line ending but loses the note and the spaces that
+held the note off the value. Everything below that line is kept as it was: a
+comment on a line of its own, the bracket's indent, or nothing. The line ending
+stays even though the note took one with it, because the element the note moved
+to now ends that line and the bracket still needs one of its own. A boundary
+with no line ending is only spaces, and is returned as it is.
 -}
 closingOf : Trivia -> Trivia
 closingOf boundary =
     Array.prepend (withoutComments (upToFirstBreak boundary)) (afterFirstBreak boundary)
 
 
-{-| The pieces of a boundary up to and including the end of the line it starts
-on -- the part that belongs to whatever was written above it.
+{-| The pieces of a boundary up to and including its first line ending. This is
+the part that belongs to whatever was written above the boundary.
 -}
 upToFirstBreak : Trivia -> Trivia
 upToFirstBreak pieces =
@@ -1386,7 +1382,8 @@ upToFirstBreak pieces =
             pieces
 
 
-{-| The rest of it: the indent that belongs to whatever comes next.
+{-| The pieces of a boundary after its first line ending: the indent of whatever
+comes next.
 -}
 afterFirstBreak : Trivia -> Trivia
 afterFirstBreak pieces =
@@ -1398,8 +1395,7 @@ afterFirstBreak pieces =
             []
 
 
-{-| The indent a line starts with, which is whatever follows its last line
-ending.
+{-| The indent a line starts with: whatever follows the last line ending.
 -}
 indentOf : Trivia -> Trivia
 indentOf pieces =
@@ -1446,9 +1442,9 @@ hasBreak pieces =
     firstBreak pieces /= Nothing
 
 
-{-| The same trivia with the comments taken out and the spaces that were holding
-them off taken out with them, so that nothing is left pointing at a line that no
-longer says anything.
+{-| The same trivia with every comment removed, along with the spaces that held
+each comment off the text before it. Nothing is left pointing at a value that is
+no longer there.
 -}
 withoutComments : Trivia -> Trivia
 withoutComments pieces =
@@ -2299,22 +2295,24 @@ styleOf document =
 -- VALUES
 
 
-{-| A string, written as a basic one: `"..."` on one line.
+{-| A string, written in the basic form: `"..."` on one line, with `\n` for a
+newline.
 -}
 string : String -> Value
 string =
     Literal.string
 
 
-{-| A string, written as a multi-line one: `"""..."""`, with the newlines in it
-written as themselves rather than as `\n`.
+{-| A string, written in the multi-line form: `"""..."""`, with the newlines in
+it written as real line breaks rather than as `\n`.
 
-The form for a value a person is meant to read: a note, a key, a query. Every
-string can be written this way, so this never fails.
+This is the form to use for text a person will read: a note, a query, a block
+of help text. Every string can be written this way, so this never fails.
 
-**Setting a value the file already means changes nothing**, spelling included --
-see [`set`](#set). A key that already says this in a basic string keeps the
-basic string; the form is chosen when the key is first written.
+**A value the file already means is not rewritten**, even if it is spelled
+differently. See [`set`](#set). A key that already holds this text as a basic
+string keeps the basic string; the form is chosen when the key is first
+written. Use [`respell`](#respell) to change it.
 
 -}
 multilineString : String -> Value
@@ -2322,12 +2320,12 @@ multilineString =
     Literal.multilineString
 
 
-{-| A string, written as a literal one: `'...'`, with no escapes at all.
+{-| A string, written in the literal form: `'...'`, with no escapes at all.
 
-`Nothing` when the string has an apostrophe, a newline, or a control character
-other than tab in it, since a literal string has no way to spell those. It does
-not fall back to another form: which form a key is written in should not depend
-on what the value happens to contain.
+Returns `Nothing` if the string contains an apostrophe, a newline, or a control
+character other than tab, because a literal string has no way to write those.
+It does not fall back to another form: the form a key is written in should not
+depend on what the value happens to contain.
 
 -}
 literalString : String -> Maybe Value
@@ -2335,11 +2333,11 @@ literalString =
     Literal.literalString
 
 
-{-| A string, written as a multi-line literal one: `'''...'''`: no escapes, and
-the newlines written as themselves.
+{-| A string, written in the multi-line literal form: `'''...'''`, with no
+escapes and with the newlines written as real line breaks.
 
-`Nothing` when the string cannot be spelled that way -- three apostrophes in a
-row, an apostrophe at the very end, a lone carriage return, or a control
+Returns `Nothing` if the string cannot be written that way: three apostrophes
+in a row, an apostrophe at the very end, a lone carriage return, or a control
 character other than tab and newline.
 
 -}
