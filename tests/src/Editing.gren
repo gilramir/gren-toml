@@ -172,8 +172,10 @@ intValue found =
 person actually writes: a list arranged over several lines with a note against
 each element, one flat, one with the bracket hanging off the first element, one
 over several lines with a trailing comma and one without -- which is the shape
-where the last newline belongs to the last *element* and not to the array -- and
-the two empty ones.
+where the last newline belongs to the last *element* and not to the array -- the
+two empty ones, one without the trailing comma *and* with a note on the last
+element, where that note lives in the element's `after` and not in the array,
+and one with an explanation on its own line above the closing bracket.
 -}
 listed : Array String
 listed =
@@ -196,6 +198,14 @@ listed =
     , "bare = ["
     , "  1,"
     , "  2"
+    , "]"
+    , "noted = ["
+    , "  1, # one"
+    , "  2 # two"
+    , "]"
+    , "closed = ["
+    , "  \"x\","
+    , "  # end"
     , "]"
     , "notAList = 3"
     , ""
@@ -1315,6 +1325,40 @@ editingSuite =
             , U.test "an empty array has nothing to take out of it" <| \_ ->
                 Task.succeed
                     (Expect.equal (Ok lists) (editList (Edit.removeAt [ "roomy" ] 0)))
+            -- THE NOTE ON A BARE LAST ELEMENT IS IN ITS AFTER, NOT IN THE ARRAY
+            , U.test "appending after a bare last element keeps its note on it" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expectingList (replaceLine "  2 # two" "  2, # two\n  3"))
+                        (editList (Edit.appendTo [ "noted" ] (Edit.int 3)))
+                    )
+            , U.test "and removing it takes that note, not the one above" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expectingList
+                            (dropLines [ "  2 # two" ] >> replaceLine "  1, # one" "  1 # one")
+                        )
+                        (editList (Edit.removeAt [ "noted" ] 1))
+                    )
+            , U.test "removing the one above leaves the bare one as it was" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expectingList (dropLines [ "  1, # one" ]))
+                        (editList (Edit.removeAt [ "noted" ] 0))
+                    )
+            -- A NOTE ON ITS OWN LINE ABOVE THE BRACKET STAYS THERE
+            , U.test "appending goes above an explanation that sits against the bracket" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expectingList (afterLine "  \"x\"," "  \"y\","))
+                        (editList (Edit.appendTo [ "closed" ] (Edit.string "y")))
+                    )
+            , U.test "and removing the last element leaves that explanation alone" <| \_ ->
+                Task.succeed
+                    (Expect.equal
+                        (expectingList (dropLines [ "  \"x\"," ]))
+                        (editList (Edit.removeAt [ "closed" ] 0))
+                    )
             -- REPLACING ONE ELEMENT TOUCHES ONE ELEMENT
             , U.test "setting an element by position leaves its note and the alignment" <| \_ ->
                 Task.succeed

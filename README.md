@@ -665,7 +665,7 @@ Everything is checked against the official
 
 **Which TOML 1.1**, since the answer has moved before: the one in
 `vendor/toml-test/tests/files-toml-1.1.0`, at the commit that submodule is
-pinned to — `bc8f2c2`, `v1.6.0-74-gbc8f2c2`. Against the 1.0.0 manifest beside
+pinned to — `bc8f2c2`, `v2.2.0-16-gbc8f2c2`. Against the 1.0.0 manifest beside
 it, that adds `\x` and `\e` escapes, newlines and trailing commas inside inline
 tables, and seconds made optional in times and date-times, and it settles that a
 lone carriage return inside a multi-line string is invalid. It does **not** add
@@ -699,7 +699,7 @@ reward for being valid.
 ## Tests
 
 ```sh
-devbox run test          # 236 checks, ~1.1s, no network
+devbox run test          # 241 checks, ~1.1s, no network
 devbox run conformance   # the official toml-test runner; needs Go
 ```
 

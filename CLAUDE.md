@@ -37,7 +37,7 @@ Everything runs inside devbox; `gren` and node 22 are not on `PATH` otherwise.
 ```sh
 devbox run build    # compile the package
 devbox run docs     # check the doc comments parse
-devbox run test     # tests/run.sh: 236 checks, 714 of them corpus files, ~1.1s
+devbox run test     # tests/run.sh: 241 checks, 714 of them corpus files, ~1.1s
 devbox run gen      # regenerate the two generated test fixtures
 
 devbox run conformance   # toml-test/: the official runner. Needs Go and,
@@ -185,18 +185,26 @@ of them sits under the element it belongs to:
 
 - the note written after an element's comma lives in the **next** element's
   `before` -- and in the array's `trailing` for the last element;
-- the space that holds the closing bracket off, the one in `[ 1, 2 ]`, lives in
-  the last element's **`after`**, not in `trailing` at all.
+- when the last element has **no comma**, everything between it and the `]` --
+  the space in `[ 1, 2 ]`, but also a note and the newline after it -- lives in
+  that element's **`after`**, and `trailing` is empty. The parser's `Done`
+  branch for a bare last element says so.
 
 The convention that follows from the first: everything up to and including the
 first `Break` of a boundary belongs to the line above it, and everything after
 that is the next element's indent. `upToFirstBreak` and `afterFirstBreak` are
 the whole of the arithmetic.
 
-The second is why `appended` moves the old last element's `after` onto the new
-one. A comma is about to be written where that space was, and `[ 1, 2 ]` comes
-out as `[ 1, 2 , 3]` if it does not move -- which is what the editing suite said
-before it was fixed.
+The second is why `appended` and `removedFrom` read `last.after ++ trailing` as
+**one boundary** and never look at either field on its own. The first version
+looked at them separately, treated `after` as if it could only hold a space,
+and on `2 # two` with no comma it copied the previous element's note onto the
+new element and moved `# two` onto it as well; `removeAt` left the removed
+element's note on the survivor. The `noted` and `closed` arrays in the Editing
+fixture are the two shapes that catch this. `closingOf` is what goes back in
+front of the bracket once a note has moved up: the line ending is kept even
+though the note took one with it, because the element the note moved to now
+ends that line and the `]` still needs its own.
 
 **`Array.get -1` in Gren is the last element**, so `elementAt` guards
 `index < 0`. Without it, `setAt path -1` would quietly change the last element.

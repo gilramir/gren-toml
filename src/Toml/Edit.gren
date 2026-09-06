@@ -966,6 +966,13 @@ A key that is not there yet is written as a one-element array, which is what
 makes "add this to my list" work on a file that does not exist. A key holding
 something that is not an array is left alone.
 
+An array *inside* an inline table counts as not there, since a path stops at the
+brace: `appendTo [ "a", "b" ]` over `a = { b = [1] }` does not reach `b`, and
+writes a `[a]` header with a new `b` under it, which is a file that
+[`Toml.Table.fromDocument`](Toml-Table#fromDocument) rejects for defining `a`
+twice. That is the same edge [`set`](#set) has, and the same way round it: replace
+the whole inline table with [`inlineTable`](#inlineTable).
+
 -}
 appendTo : Array String -> Value -> Document -> Document
 appendTo path content document =
@@ -1140,42 +1147,77 @@ elementAt index lit =
 
 {-| The array with one more element on the end.
 
-The new element's `before` is the trivia that used to sit before the closing
-bracket -- which is where the old last element's note lives -- followed by that
-element's own indent, so the note stays on its line and the new value starts
-where the one above it did. What is left in front of the bracket is the same
-trivia with the comments taken out of it, since a comment written against a
-value must not be left behind pointing at nothing.
+The boundary the new element is written into is everything between the old last
+value and the closing bracket, and which field holds it depends on the comma:
+after `2,` it is the array's `trailing`, after a bare `2` it is that element's
+own `after`, note and newline included. The two are joined and read as one
+boundary here, so that the note against the last element cannot be treated as a
+space on one path and a comment on the other.
 
-The old last element's `after` moves to the new one with it. Where a comma was
-about to be written there is no longer the place for the space that was holding
-the closing bracket off, and `[ 1, 2 ]` would otherwise gain one at `2 ,`.
+The new element's `before` is that boundary up to the end of its first line --
+which is where the old last element's note lives -- followed by the old last
+element's own indent, so the note stays on its line and the new value starts
+where the one above it did. Whatever came after that line stays in front of the
+bracket: an explanation written on a line of its own above the `]` is not the
+last element's, and it still wants to be last. When the boundary has no line
+ending at all, the new element copies the old last element's `before` instead,
+which is what puts it on a line of its own in a hanging-bracket array and on the
+same line in a flat one.
+
+What is left in front of the bracket goes back into the field the comma says it
+belongs in, with the comments taken out of it if the note moved up, since a
+comment written against a value must not be left behind pointing at nothing.
+The old last element's `after` is emptied: a comma is about to be written where
+that space was, and `[ 1, 2 ]` would otherwise gain one at `2 ,`.
 
 -}
 appended : Value -> ArrayLit -> ArrayLit
 appended content lit =
     when Array.popLast lit.elements is
         Nothing ->
-            { elements = [ { before = lit.trailing, value = content, after = [], comma = False } ]
-            , trailing = withoutComments lit.trailing
+            { elements =
+                [ { before = upToFirstBreak lit.trailing
+                  , value = content
+                  , after = closingOf lit.trailing
+                  , comma = False
+                  }
+                ]
+            , trailing = []
             }
 
         Just { last, initial } ->
+            let
+                boundary =
+                    Array.prepend last.after lit.trailing
+
+                closing =
+                    closingOf boundary
+            in
             { elements =
                 initial
                     |> Array.pushLast { last | comma = True, after = [] }
                     |> Array.pushLast
                         { before =
-                            if Array.isEmpty lit.trailing then
-                                last.before
+                            if hasBreak boundary then
+                                Array.prepend (upToFirstBreak boundary) (indentOf last.before)
 
                             else
-                                Array.prepend lit.trailing (indentOf last.before)
+                                last.before
                         , value = content
-                        , after = last.after
+                        , after =
+                            if last.comma then
+                                []
+
+                            else
+                                closing
                         , comma = last.comma
                         }
-            , trailing = withoutComments lit.trailing
+            , trailing =
+                if last.comma then
+                    closing
+
+                else
+                    []
             }
 
 
@@ -1188,11 +1230,19 @@ element's note -- followed by the next element's indent. On one line, where
 there is no line ending in either, that is just the separator that was in front
 of the element, which is what a person would have left there.
 
-The last element is the special one. Its note is written after it, so what
-survives goes in front of the closing bracket, and only when that bracket is on
-a line of its own; an array that ends `2 ]` has nothing there to keep. The
-element before it takes over its comma, and its `after` as well, which is where
-the space in `[ 1, 2 ]` that holds the bracket off is kept.
+The last element is the special one. Its note is written after it, in its own
+`after` when it had no comma and in the array's `trailing` when it did, and the
+two are read as one boundary here for the same reason [`appended`](#appended)
+reads them as one. That note goes with the element. What survives in front of
+the bracket is the previous element's own note line, from the removed element's
+`before`, followed by whatever sat below the removed element's line: an
+explanation on a line of its own above the `]`, or the bracket's indent. An
+array that ends `2 ]` has no line ending anywhere in that, and keeps just the
+space.
+
+The element before it takes over its comma. When that comma is not there, the
+survivors go into that element's `after`, where the bare last element of an
+array keeps them; when it is, they go into `trailing`.
 
 -}
 removedFrom : Int -> ArrayLit -> Maybe ArrayLit
@@ -1203,6 +1253,10 @@ removedFrom index lit =
 
         Just gone ->
             if index == Array.length lit.elements - 1 then
+                let
+                    survivors =
+                        afterLast gone.before (Array.prepend gone.after lit.trailing)
+                in
                 Just
                     { elements =
                         Array.dropLast 1 lit.elements
@@ -1212,19 +1266,19 @@ removedFrom index lit =
                                     { previous
                                         | comma = gone.comma
                                         , after =
-                                            if Array.isEmpty gone.after then
+                                            if gone.comma then
                                                 previous.after
 
                                             else
-                                                gone.after
+                                                survivors
                                     }
                                 )
                     , trailing =
-                        if hasBreak lit.trailing then
-                            Array.prepend (upToFirstBreak gone.before) (afterFirstBreak lit.trailing)
+                        if gone.comma || Array.length lit.elements == 1 then
+                            survivors
 
                         else
-                            lit.trailing
+                            []
                     }
 
             else
@@ -1242,6 +1296,44 @@ removedFrom index lit =
                                         }
                                     )
                     }
+
+
+{-| What sits in front of the closing bracket once the last element is gone,
+given the boundary that was in front of that element and the one that was after
+it.
+
+A boundary with no line ending in it is kept as it is, since it is only the
+space in `[ 1, 2 ]`. Otherwise the removed element's note line goes, and what
+remains is the previous element's note line -- the part of `before` up to its
+first line ending -- followed by whatever was written below the removed element.
+When `before` has no line ending either, the array was on one line up to its
+last element, and [`closingOf`](#closingOf) keeps the bracket on the line it
+was on.
+
+-}
+afterLast : Trivia -> Trivia -> Trivia
+afterLast before boundary =
+    if not (hasBreak boundary) then
+        boundary
+
+    else if hasBreak before then
+        Array.prepend (upToFirstBreak before) (afterFirstBreak boundary)
+
+    else
+        closingOf boundary
+
+
+{-| What stays in front of the closing bracket once the note on the first line
+of its boundary has moved onto an element: that line's ending, with the note and
+the spaces holding it off taken out, and then everything below it as it was --
+an explanation on a line of its own, the bracket's indent, or nothing. The line
+ending is kept even though the note took one with it, because the element the
+note moved to now ends that line and the bracket still needs its own. A boundary
+with no line ending is only spaces and stays as it is.
+-}
+closingOf : Trivia -> Trivia
+closingOf boundary =
+    Array.prepend (withoutComments (upToFirstBreak boundary)) (afterFirstBreak boundary)
 
 
 {-| The pieces of a boundary up to and including the end of the line it starts
