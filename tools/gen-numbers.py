@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regenerate tests/src/Numbers.gren from the official TOML test suite.
+"""Regenerate tests/src/Numbers.geng from the official TOML test suite.
 
 Every integer and float in the valid/ and invalid/ trees, filtered to the
 1.1.0 manifest. The valid cases are paired with the expected value from the
@@ -10,7 +10,7 @@ toml-test writes them as float64 already rounded -- `3e1_4` comes back as
 `3.0e14` and `-0.0` as `-0`. The Gren side parses the expected string with the
 same BigDecimal and compares, so the rendering never enters into it.
 
-The file it writes is tools/templates/Numbers.gren rendered with the two
+The file it writes is tools/templates/Numbers.geng rendered with the two
 tables; the Gren lives there rather than in string constants here.
 
 Run from the package root:  python3 tools/gen-numbers.py
@@ -94,7 +94,7 @@ def render(good, bad):
         lstrip_blocks=True,
         keep_trailing_newline=True,
     )
-    return env.get_template("Numbers.gren").render(good=good, bad=bad)
+    return env.get_template("Numbers.geng").render(good=good, bad=bad)
 
 
 def main():
@@ -109,7 +109,7 @@ def main():
     ]
     bad_rows = [{"text": escape(text), "file": path} for path, text in bad]
 
-    with open("tests/src/Numbers.gren", "w") as out:
+    with open("tests/src/Numbers.geng", "w") as out:
         out.write(render(good_rows, bad_rows))
     print("%d valid, %d invalid, %d lines skipped as not simple assignments"
           % (len(good), len(bad), skipped))

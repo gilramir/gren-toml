@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regenerate tests/src/Literals.gren from the official TOML test suite.
+"""Regenerate tests/src/Literals.geng from the official TOML test suite.
 
 Pulls every string literal out of the suite's string and key directories and
 pairs it with the value the .json says it means. Finding where a literal ends
@@ -12,7 +12,7 @@ with nothing but whitespace or a comment after it. An unterminated string is
 not a literal this module is being asked about, so those are skipped and
 counted.
 
-The file it writes is tools/templates/Literals.gren rendered with the two
+The file it writes is tools/templates/Literals.geng rendered with the two
 tables; the Gren lives there rather than in a string constant here.
 
 Run from the package root:  python3 tools/gen-strings.py
@@ -197,7 +197,7 @@ def render(good, bad, skipped):
         lstrip_blocks=True,
         keep_trailing_newline=True,
     )
-    return env.get_template("Literals.gren").render(
+    return env.get_template("Literals.geng").render(
         good=good, bad=bad, skipped=skipped
     )
 
@@ -214,7 +214,7 @@ def main():
     ]
     bad_rows = [{"raw": gren_string(raw), "file": path} for path, raw in bad]
 
-    with open("tests/src/Literals.gren", "w") as out:
+    with open("tests/src/Literals.geng", "w") as out:
         out.write(render(good_rows, bad_rows, skipped))
     print("%d valid, %d invalid, %d skipped" % (len(good), len(bad), skipped))
 
