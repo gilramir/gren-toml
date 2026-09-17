@@ -1,5 +1,14 @@
 # gren-toml
 
+**On Geng.** This is the `geng` branch, the port to
+[Geng](https://github.com/gilramir/geng-lang)'s core. The API is unchanged. The
+unit suite passes 266 of 266 on Geng and the official toml-test runner 214, 214
+and 467, as on stock Gren. What moved underneath: Geng's `Bytes.toString` keeps
+a leading U+FEFF where stock's removed it as a byte order mark
+(gren-lang/core#155), so `parseBytes` takes the mark off itself; `Char.fromCode`
+answers a `Maybe`; and an eight-digit `\U` escape is held under 2^31 while its
+digits are read, so the scalar-value check never sees a wrapped value.
+
 A TOML 1.1 parser for [Gren](https://gren-lang.org/).
 You can use it to read TOML files easily.
 
@@ -693,8 +702,9 @@ Toml.toString   : Document -> String
 file invalid are decided before there is a `String` to look at. `Bytes.toString`
 is a strict UTF-8 decode, so a bad byte sequence is caught there; by the time you
 hold a `String`, the error has been repaired into `U+FFFD`, which is a legal TOML
-character and cannot be found again. And decoding silently removes one leading
-byte order mark, so only the bytes know whether there was one.
+character and cannot be found again. And only the bytes know whether there was
+a byte order mark: stock Gren's decode silently removes one, and Geng's keeps it
+as a character, so `parseBytes` asks the bytes and takes it off either way.
 
 ## Conformance
 

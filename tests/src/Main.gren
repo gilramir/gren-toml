@@ -22,40 +22,41 @@ import Editing exposing (editingSuite)
 import Encoding exposing (encodingSuite)
 import Examples exposing (examplesSuite)
 import FileSystem
-import Init
 import Literals exposing (literalsSuite)
 import Node
 import Numbers exposing (numbersSuite)
 import RoundTrip exposing (roundTripSuite)
 import Semantics exposing (semanticsSuite)
-import Task
+import Task exposing (Task)
 import Test.Runner.UnitNode as U
 import Values exposing (valuesSuite)
 import Writing exposing (writingSuite)
 
 
-main : Node.SimpleProgram a
+main : Task Never {}
 main =
-    U.runWith
-        { name = "gren-toml"
-        , version = "1.1.0"
-        , init =
-            \done ->
-                Init.await FileSystem.initialize <| \fs ->
-                    done { fs = fs }
-        , globalSetUp = \_ -> Task.succeed {}
-        , globalTearDown = \_ -> Task.succeed {}
-        , suites =
-            \perms ->
-                [ numbersSuite
-                , decodingSuite
-                , editingSuite
-                , encodingSuite
-                , examplesSuite
-                , literalsSuite
-                , roundTripSuite perms
-                , semanticsSuite perms
-                , valuesSuite perms
-                , writingSuite
-                ]
-        }
+    Node.getEnvironment
+        |> Task.andThen
+            (\env ->
+                U.runWith env
+                    { name = "gren-toml"
+                    , version = "1.1.0"
+                    , init = FileSystem.initialize |> Task.map (\fs -> { fs = fs })
+                    , fileSystem = \perms -> Just perms.fs
+                    , globalSetUp = \_ -> Task.succeed {}
+                    , globalTearDown = \_ -> Task.succeed {}
+                    , suites =
+                        \perms ->
+                            [ numbersSuite
+                            , decodingSuite
+                            , editingSuite
+                            , encodingSuite
+                            , examplesSuite
+                            , literalsSuite
+                            , roundTripSuite perms
+                            , semanticsSuite perms
+                            , valuesSuite perms
+                            , writingSuite
+                            ]
+                    }
+            )

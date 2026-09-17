@@ -1057,18 +1057,16 @@ editingSuite =
                 in
                 Task.succeed
                     (Expect.equal
-                        (Ok
-                            (String.join "\n"
-                                [ "# Which scheme to open in."
-                                , "theme = \"dark\""
-                                , ""
-                                , "# In the order they are shown."
-                                , "zones = [\"Asia/Seoul\"]"
-                                , ""
-                                ]
-                            )
+                        (String.join "\n"
+                            [ "# Which scheme to open in."
+                            , "theme = \"dark\""
+                            , ""
+                            , "# In the order they are shown."
+                            , "zones = [\"Asia/Seoul\"]"
+                            , ""
+                            ]
                         )
-                        (Ok (Toml.toString (write Toml.empty)))
+                        (Toml.toString (write Toml.empty))
                     )
             , U.test "and the second run over that file changes only what moved" <| \_ ->
                 let

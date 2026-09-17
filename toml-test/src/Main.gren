@@ -72,19 +72,23 @@ parser =
     }
 
 
-main : Node.SimpleProgram a
+main : Task Never {}
 main =
-    Program.run
-        { parser = parser
-        , onCommand =
-            \env command ->
-                when command is
-                    Decode ->
-                        convert env decodeToml
+    Node.getEnvironment
+        |> Task.andThen
+            (\environment ->
+                Program.run environment
+                    { parser = parser
+                    , onCommand =
+                        \env command ->
+                            when command is
+                                Decode ->
+                                    convert env decodeToml
 
-                    Encode ->
-                        convert env encodeToml
-        }
+                                Encode ->
+                                    convert env encodeToml
+                    }
+            )
 
 
 {-| Both subcommands are the same program with a different function in the

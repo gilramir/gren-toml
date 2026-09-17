@@ -5,5 +5,5 @@
 # dependency, so that the suite can reach the modules gren.json does not expose.
 set -e
 cd "$(dirname "$0")"
-gren make Main >/dev/null
+geng make Main >/dev/null
 exec node app "$@"

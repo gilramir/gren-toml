@@ -159,8 +159,8 @@ invalid are decided before there is a `String` to look at:
     already been repaired into `U+FFFD`, and `U+FFFD` is a legal TOML character,
     so it cannot be found again afterwards.
   - **The byte order mark.** Exactly one leading mark is allowed and is not part
-    of the document. Decoding removes it silently, so this function looks at the
-    first three bytes itself and records what it saw, which is what lets
+    of the document. This function looks at the first three bytes itself, takes
+    the mark off the decoded text, and records what it saw, which is what lets
     [`toString`](#toString) put it back.
 
 -}
@@ -171,10 +171,16 @@ parseBytes bytes =
             Err { row = 1, col = 1, expecting = "valid UTF-8" }
 
         Just text ->
-            -- Decoding took one leading mark off already. Any that is still
-            -- there is a second one, and the grammar is right to refuse it.
-            parseDecoded text
-                |> Result.map (\doc -> { doc | hasBom = startsWithBom bytes })
+            -- Geng's decode keeps every character, a leading U+FEFF included;
+            -- stock Gren's removed one as a byte order mark (gren-lang/core#155).
+            -- So the mark the bytes had comes off here, and one that is still
+            -- there is a second one, which the grammar is right to refuse.
+            if startsWithBom bytes then
+                parseDecoded (String.dropFirst 1 text)
+                    |> Result.map (\doc -> { doc | hasBom = True })
+
+            else
+                parseDecoded text
 
 
 {-| Read a TOML file from a string.
@@ -302,8 +308,8 @@ chooseError deadEnds =
 
 {-| Whether the first three bytes are a UTF-8 byte order mark.
 
-This has to be asked of the bytes. `Bytes.toString` strips one leading mark as
-part of decoding and does not report it, so a `String` cannot answer.
+This is asked of the bytes, because that is where a mark is a mark: a
+`String` beginning with U+FEFF could have been written that way.
 
 -}
 startsWithBom : Bytes -> Bool

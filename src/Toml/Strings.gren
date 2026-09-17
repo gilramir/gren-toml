@@ -392,7 +392,10 @@ codePoint chars index width =
                 when Array.get (index + offset) chars is
                     Just char ->
                         if Char.isHexDigit char then
-                            collect (offset + 1) (acc * 16 + hexValue char)
+                            -- Held at one past the largest code point, so
+                            -- that eight digits cannot wrap a 32-bit `Int`
+                            -- back into range: `\UFFFFFFFF` stays too big.
+                            collect (offset + 1) (Basics.min 0x110000 (acc * 16 + hexValue char))
 
                         else
                             Nothing
@@ -404,10 +407,13 @@ codePoint chars index width =
         |> Maybe.andThen
             (\code ->
                 if isScalarValue code then
-                    Just
-                        { text = String.fromChar (Char.fromCode code)
-                        , next = index + width
-                        }
+                    Char.fromCode code
+                        |> Maybe.map
+                            (\char ->
+                                { text = String.fromChar char
+                                , next = index + width
+                                }
+                            )
 
                 else
                     Nothing
@@ -561,22 +567,22 @@ isCommentChar char =
 
 cr : Char
 cr =
-    Char.fromCode 0xD
+    '\r'
 
 
 lf : Char
 lf =
-    Char.fromCode 0xA
+    '\n'
 
 
 tab : Char
 tab =
-    Char.fromCode 0x9
+    '\t'
 
 
 space : Char
 space =
-    Char.fromCode 0x20
+    ' '
 
 
 backslash : Char
@@ -586,12 +592,12 @@ backslash =
 
 quoteChar : Char
 quoteChar =
-    Char.fromCode 0x22
+    '"'
 
 
 apostropheChar : Char
 apostropheChar =
-    Char.fromCode 0x27
+    '\''
 
 
 crlf : String

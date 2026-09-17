@@ -14,7 +14,6 @@ files that only apply to 1.0.
 import Array exposing (Array)
 import Basics exposing (..)
 import Bytes exposing (Bytes)
-import Bytes.Decode
 import FileSystem
 import FileSystem.Path as Path
 import Maybe exposing (Maybe(..))
@@ -33,8 +32,7 @@ root =
 {-| One file of the suite.
 
 `source` is what a writer must produce to have round-tripped it: the decoded
-text, with the byte order mark put back if the bytes had one. `bytes` is what
-the parser is actually given.
+text, byte order mark and all. `bytes` is what the parser is actually given.
 
 -}
 type alias File =
@@ -80,7 +78,11 @@ readFile fs name =
                         Just
                             { path = name
                             , bytes = bytes
-                            , source = restoreBom bytes ++ text
+                            -- Geng's decode keeps a leading mark as
+                            -- U+FEFF, so the decoded text is already what a
+                            -- writer has to produce. Stock Gren's removed it,
+                            -- and this put it back from the bytes.
+                            , source = text
                             , valid = String.startsWith "valid/" name
                             }
             )
@@ -99,29 +101,3 @@ readText fs name =
                     Nothing ->
                         Task.fail (name ++ " is not valid UTF-8")
             )
-
-
-{-| Decoding removes one leading byte order mark without saying so, so the text
-to compare a writer against is the decoded text with the mark put back. This is
-worked out from the bytes here rather than asked of `Toml`, which is the point:
-the library's answer is what is under test.
--}
-restoreBom : Bytes -> String
-restoreBom bytes =
-    let
-        found =
-            Bytes.Decode.decode
-                (Bytes.Decode.map3
-                    (\a b c -> a == 0xEF && b == 0xBB && c == 0xBF)
-                    Bytes.Decode.unsignedInt8
-                    Bytes.Decode.unsignedInt8
-                    Bytes.Decode.unsignedInt8
-                )
-                bytes
-                |> Maybe.withDefault False
-    in
-    if found then
-        "\u{FEFF}"
-
-    else
-        ""
