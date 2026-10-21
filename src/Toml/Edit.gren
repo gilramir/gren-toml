@@ -880,6 +880,9 @@ An edit that gives the file a meaning it cannot have -- a key under an inline
 table, say -- is not refused here. See [what this module does not
 check](#what-this-module-does-not-check).
 
+An empty path names no key, so `set []` answers the document unchanged; the
+top-level key `""` is the path `[ "" ]`.
+
 -}
 set : Array String -> Value -> Document -> Document
 set path content document =
@@ -921,7 +924,8 @@ files spelled the old way, and `respell` updates them. Calling it on every key
 on every save would undo the user's own choices, turning their `'C:\Users'`
 back into a basic string each time.
 
-On a key that is not in the document this is the same as `set`.
+On a key that is not in the document this is the same as `set`, and like
+`set` it leaves the document unchanged on an empty path.
 
 -}
 respell : Array String -> Value -> Document -> Document
@@ -2498,37 +2502,41 @@ cut from to expressions =
 
 insert : Array String -> Value -> Document -> Document
 insert path content document =
-    let
-        tablePath =
-            Array.dropLast 1 path
+    if Array.isEmpty path then
+        document
 
-        leaf =
-            Maybe.withDefault "" (Array.last path)
+    else
+        let
+            tablePath =
+                Array.dropLast 1 path
 
-        pair =
-            { key = Literal.key [ leaf ]
-            , wsBeforeEq = " "
-            , wsAfterEq = " "
-            , value = content
-            }
-    in
-    when { last = lastOf tablePath document, isRoot = Array.length tablePath == 0 } is
-        { last = Just index } ->
-            insertAfter index pair document
+            leaf =
+                Maybe.withDefault "" (Array.last path)
 
-        { last = Nothing, isRoot = True } ->
-            -- No top-level key to go after. Anything appended now would land
-            -- inside the last table, so the key goes ahead of the first header
-            -- instead, if there is one.
-            when firstHeader document is
-                Just index ->
-                    insertBefore index pair document
+            pair =
+                { key = Literal.key [ leaf ]
+                , wsBeforeEq = " "
+                , wsAfterEq = " "
+                , value = content
+                }
+        in
+        when { last = lastOf tablePath document, isRoot = Array.length tablePath == 0 } is
+            { last = Just index } ->
+                insertAfter index pair document
 
-                Nothing ->
-                    append tablePath pair document
+            { last = Nothing, isRoot = True } ->
+                -- No top-level key to go after. Anything appended now would land
+                -- inside the last table, so the key goes ahead of the first header
+                -- instead, if there is one.
+                when firstHeader document is
+                    Just index ->
+                        insertBefore index pair document
 
-        _ ->
-            append tablePath pair document
+                    Nothing ->
+                        append tablePath pair document
+
+            _ ->
+                append tablePath pair document
 
 
 {-| The first `[header]` in the file, which is where the top-level keys end.

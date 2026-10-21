@@ -84,7 +84,9 @@ path name =
     Array.prepend [ name.first.value ] (Array.map (\part -> part.key.value) name.rest)
 
 
-{-| A whole key from its parts.
+{-| A whole key from its parts. A key has at least one part, so an empty
+array is the key `""`, the empty quoted key, as `[ "" ]` is; a caller that
+means "no key" has to say so before it gets here.
 -}
 key : Array String -> Key
 key parts =
