@@ -1,3 +1,13 @@
+# 1.1.1
+
+- `Toml.Edit.set []` and `respell []` now give the document back unchanged.
+  An empty path names no key, but they used to write a top-level `"" = …`
+  into the file. The top-level key `""` is still there for anyone who means
+  it: its path is `[ "" ]`.
+- `Toml.Literal.key` now documents that an empty array is the key `""`, the
+  same as `[ "" ]`. A caller that means "no key" has to check for that before
+  it gets there.
+
 # 1.1.0
 
 Write all four string forms, change an array one element at a time without
