@@ -37,7 +37,7 @@ Everything runs inside devbox; `gren` and node 22 are not on `PATH` otherwise.
 ```sh
 devbox run build    # compile the package
 devbox run docs     # check the doc comments parse
-devbox run test     # tests/run.sh: 266 checks, 714 of them corpus files, ~1.1s
+devbox run test     # tests/run.sh: 268 checks, 714 of them corpus files, ~1.1s
 devbox run gen      # regenerate the two generated test fixtures
 
 devbox run conformance   # toml-test/: the official runner. Needs Go and,
