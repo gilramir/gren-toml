@@ -320,6 +320,10 @@ editingSuite =
                         )
                         (edit (Edit.set [ "name" ] (Edit.string "a\tb")))
                     )
+            , U.test "an empty path names no key, and set leaves the document alone" <| \_ ->
+                Task.succeed (Expect.equal (Ok source) (edit (Edit.set [] (Edit.int 5))))
+            , U.test "and so does respell" <| \_ ->
+                Task.succeed (Expect.equal (Ok source) (edit (Edit.respell [] (Edit.int 5))))
             -- ADDING A KEY
             , U.test "a new key lands with the others in its table, indented to match" <| \_ ->
                 Task.succeed
