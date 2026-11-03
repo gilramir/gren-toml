@@ -4,7 +4,8 @@ runtime = "node"
 
 [dependencies]
 "github.com/geng-language/stream" = "0.1.0 <= v < 0.2.0"
-"github.com/gilramir/gren-argparse" = "2.0.1 <= v < 3.0.0"
+"github.com/gilramir/gren-argparse" = "3.0.0 <= v < 4.0.0"
+"github.com/gilramir/gren-argparse/node" = "1.0.0 <= v < 2.0.0"
 "github.com/gilramir/gren-bignum" = "1.0.0 <= v < 2.0.0"
 "github.com/gilramir/gren-civil-time" = "1.0.0 <= v < 2.0.0"
 "github.com/gilramir/gren-toml" = "1.1.0 <= v < 2.0.0"
@@ -13,6 +14,7 @@ runtime = "node"
 [sources]
 "github.com/geng-language/stream" = { path = "../../../../packages/stream" }
 "github.com/gilramir/gren-argparse" = { path = "../../gren-argparse" }
+"github.com/gilramir/gren-argparse/node" = { path = "../../gren-argparse/node" }
 "github.com/gilramir/gren-bignum" = { path = "../../gren-bignum" }
 "github.com/gilramir/gren-civil-time" = { path = "../../gren-civil-time" }
 "github.com/gilramir/gren-toml" = { path = "../" }
