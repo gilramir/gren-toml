@@ -2225,11 +2225,7 @@ removeTable path document =
                 document.expressions
 
         dropped =
-            Array.indexedMap
-                (\index isOwned ->
-                    isOwned || leadsAnOwnedBlock index owned document.expressions
-                )
-                owned
+            Array.map2 (||) owned (ownedBlockLeads owned document.expressions)
     in
     rebuild document
         (Array.map2
@@ -2246,28 +2242,49 @@ removeTable path document =
         )
 
 
-{-| Whether this expression is part of the comment block leading a table that is
-being removed.
+{-| For each expression, whether it is part of the comment block leading a table
+that is being removed: a run of comment lines just before the first expression
+of a run of removed ones.
 
 A table may appear in more than one place -- `[a]`, then `[c]`, then `[a.b]` --
-so this looks for the start of every run of removed expressions rather than
-assuming there is one.
+so every run of removed expressions has its own. It is one pass from the end,
+since an expression leads a block when it is a comment line and the next one
+starts a block or leads one; looking for the start of every run from each
+expression was quadratic in the document's lines.
 
 -}
-leadsAnOwnedBlock : Int -> Array Bool -> Array Expression -> Bool
-leadsAnOwnedBlock index owned expressions =
+ownedBlockLeads : Array Bool -> Array Expression -> Array Bool
+ownedBlockLeads owned expressions =
     let
-        startsHere at =
+        isOwned at =
             Maybe.withDefault False (Array.get at owned)
-                && not (Maybe.withDefault False (Array.get (at - 1) owned))
 
-        insideCommentBlockOf at =
-            startsHere at && firstOwned at expressions <= index
+        isComment expression =
+            when expression.content is
+                Empty fields ->
+                    when fields.comment is
+                        Just _ ->
+                            True
+
+                        Nothing ->
+                            False
+
+                _ ->
+                    False
     in
-    Array.indexedFoldl
-        (\at _ found -> found || (at > index && insideCommentBlockOf at))
-        False
-        owned
+    Array.indexedFoldr
+        (\index expression acc ->
+            let
+                leads =
+                    isComment expression
+                        && ((isOwned (index + 1) && not (isOwned index)) || acc.next)
+            in
+            { next = leads, out = Array.pushLast leads acc.out }
+        )
+        { next = False, out = [] }
+        expressions
+        |> .out
+        |> Array.reverse
 
 
 {-| Whether an expression belongs to the table at `path`: the header itself, or
