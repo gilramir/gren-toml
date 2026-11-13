@@ -29,6 +29,7 @@ import RoundTrip exposing (roundTripSuite)
 import Semantics exposing (semanticsSuite)
 import Task exposing (Task)
 import Test.Runner.UnitNode as U
+import Test.Runner.UnitNode.Program as Program
 import Values exposing (valuesSuite)
 import Writing exposing (writingSuite)
 
@@ -38,7 +39,7 @@ main =
     Node.getEnvironment
         |> Task.andThen
             (\env ->
-                U.runWith env
+                Program.runWith env
                     { name = "gren-toml"
                     , version = "1.1.0"
                     , init = FileSystem.initialize |> Task.map (\fs -> { fs = fs })
