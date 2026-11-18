@@ -17,7 +17,7 @@ value rather than asking these to remember it.
 -}
 
 import BigDecimal exposing (BigDecimal)
-import BigInt exposing (BigInt)
+import BigInt
 import Char
 import Maybe exposing (Maybe(..))
 import String

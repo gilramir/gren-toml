@@ -4,7 +4,6 @@ runtime = "node"
 source-directories = ["src", "../src"]
 
 [dependencies]
-"github.com/gilramir/gren-bignum" = "1.0.0 <= v < 2.0.0"
 "github.com/gilramir/gren-civil-time" = "1.0.0 <= v < 2.0.0"
 "github.com/gilramir/gren-unit-node" = "2.0.0 <= v < 3.0.0"
 "github.com/gilramir/gren-unit-node/node" = "1.0.0 <= v < 2.0.0"
@@ -12,7 +11,6 @@ source-directories = ["src", "../src"]
 "github.com/geng-language/test" = "5.0.0 <= v < 6.0.0"
 
 [sources]
-"github.com/gilramir/gren-bignum" = { path = "../../gren-bignum" }
 "github.com/gilramir/gren-civil-time" = { path = "../../gren-civil-time" }
 "github.com/gilramir/gren-unit-node" = { path = "../../gren-unit-node" }
 "github.com/gilramir/gren-unit-node/node" = { path = "../../gren-unit-node/node" }

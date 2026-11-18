@@ -191,7 +191,7 @@ For reaching a value by path rather than by walking this list, see
 -}
 
 import BigDecimal exposing (BigDecimal)
-import BigInt exposing (BigInt)
+import BigInt
 import Civil.Date exposing (Date)
 import Civil.DateTime exposing (DateTime)
 import Civil.Time exposing (Time)

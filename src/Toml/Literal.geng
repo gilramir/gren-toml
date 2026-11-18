@@ -64,7 +64,7 @@ not the same thing and this module has to pick one of them to write.
 import Array exposing (Array)
 import Basics exposing (..)
 import BigDecimal exposing (BigDecimal)
-import BigInt exposing (BigInt)
+import BigInt
 import Civil.Date as Date exposing (Date)
 import Civil.DateTime as DateTime exposing (DateTime)
 import Civil.Time as CivilTime exposing (Time)

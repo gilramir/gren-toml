@@ -20,5 +20,4 @@ exposed = [
 ]
 
 [dependencies]
-"github.com/gilramir/gren-bignum" = "1.0.0 <= v < 2.0.0"
 "github.com/gilramir/gren-civil-time" = "1.0.0 <= v < 2.0.0"

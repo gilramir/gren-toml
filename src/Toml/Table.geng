@@ -196,7 +196,7 @@ be appended to and the first not.
 -}
 type Value
     = StringValue String
-    | IntegerValue BigInt.BigInt
+    | IntegerValue BigInt
     | FloatValue FloatValue
     | BooleanValue Bool
     | OffsetDateTimeValue DateTime
