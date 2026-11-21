@@ -1,9 +1,10 @@
 # Unreleased
 
 Every fallback the package has is one it means, and says why; the rest are
-proved away. Three types say what was only true before, which is why this is
-a new major version (not yet decided: the manifests that take gren-toml ask
-for below 2.0.0).
+proved away. Three types say what was only true before. Each is a breaking
+change to a public type, but the version stays 1.1.0 for now: the package is
+not yet published past the programs that take it, which are all changed with
+it.
 
 - `Toml.Ast.Document`'s `expressions` has at least one: every document ends
   with its last line, empty or not. A document read from text always had one;
