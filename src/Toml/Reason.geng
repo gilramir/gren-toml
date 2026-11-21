@@ -1,0 +1,23 @@
+module Toml.Reason exposing (Reason(..))
+
+{-| Why a fallback in this package runs: each `meant` names one of these
+(geng-lang `docs/user/checks.md`), and `geng checks` holds every one to
+running and every reason to being used. -}
+
+
+{-| The reasons a `meant` here names. -}
+type Reason
+    = {-| the TOML text, or a value read out of it, is malformed or is not what was asked for -}
+      FromOutside
+    | {-| the key, path or table asked about is not in the document, so the answer is that it is not there -}
+      NotKnown
+    | {-| an optional part, a comment, a note, a line ending or a fraction, is not there, so nothing is written or kept for it -}
+      NotGiven
+    | {-| a scan reached the end of its text, its array or its path, and this is the answer at the end -}
+      NoMore
+    | {-| an index a caller passed is past an edge of the array, or the element's note has nowhere to go there, so the document is left as it was -}
+      OutOfRange
+    | {-| a note has no line ending to sit before, and a comment in an array needs one, so the move is refused -}
+      NoRoom
+    | {-| another library's documented promise rules this out, one no refinement can state (that its parser always reports where it stopped; that `BigDecimal.fromString` reads what `String.fromFloat` writes): if the promise is ever broken, this is the least wrong answer -}
+      PromisedElsewhere

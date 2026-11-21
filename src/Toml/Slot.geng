@@ -1,0 +1,27 @@
+module Toml.Slot exposing (Slot(..), fromMaybe)
+
+{-| Whether something a lookup asked for is there, for an upsert: a key or
+table that is `Absent` is made, one that is `Present` is changed. Neither is
+a fallback of the other, as a `Maybe`'s `Nothing` would read: `fromMaybe` is
+the one place absence is marked, so `geng checks` counts the upserts' two
+cases as cases.
+-}
+
+import Toml.Reason as Reason
+
+
+type Slot a
+    = Absent
+    | Present a
+
+
+fromMaybe : Maybe a -> Slot a
+fromMaybe found =
+    when found is
+        Just x ->
+            Present x
+
+        Nothing ->
+            -- the one place absence is a fallback's: from here on it is a
+            -- case of its own
+            meant Reason.NotKnown Absent

@@ -1,3 +1,26 @@
+# Unreleased
+
+Every fallback the package has is one it means, and says why; the rest are
+proved away. Three types say what was only true before, which is why this is
+a new major version (not yet decided: the manifests that take gren-toml ask
+for below 2.0.0).
+
+- `Toml.Ast.Document`'s `expressions` has at least one: every document ends
+  with its last line, empty or not. A document read from text always had one;
+  one an edit leaves empty now gets the empty file's one empty line.
+- `Toml.Table.Value`'s `TableArrayValue` holds a `Tables`, an array of at
+  least one table, as `[[ ... ]]` headers build it.
+- `Toml.Literal.key` takes a key of at least one part. An empty array was the
+  key `""` before; write `[ "" ]` for that.
+- Inside: `geng checks` reports no fallback that can run unmarked, none that
+  never runs, and nothing open. Each `meant` names a reason in `Toml.Reason`
+  (malformed input, a key not in the document, an optional part not there,
+  the end of a scan, a caller's index past an edge, a refused move, and two
+  promises of another library's no refinement can state). The grammar's
+  alternatives are chained with `Maybe.orElseLazy` and `Result.onError`, not
+  written as defaults, and an upsert matches `Toml.Slot`'s `Absent` and
+  `Present`.
+
 # 1.1.0
 
 Write all four string forms, change an array one element at a time without

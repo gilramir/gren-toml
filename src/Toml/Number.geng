@@ -22,6 +22,7 @@ import Char
 import Maybe exposing (Maybe(..))
 import String
 import Toml.Ast as Ast exposing (FloatValue, Sign(..))
+import Toml.Reason as Reason
 
 
 {-| Read a TOML integer: decimal with an optional sign, or one of the three
@@ -217,23 +218,22 @@ run : { isDigit : Char -> Bool, allowLeadingZero : Bool } -> String -> Maybe Str
 run rules body =
     let
         step char state =
-            when state is
-                Nothing ->
-                    Nothing
+            state
+                |> Maybe.andThen
+                    (\soFar ->
+                        if rules.isDigit char then
+                            Just { digits = String.pushLast char soFar.digits, afterUnderscore = False }
 
-                Just soFar ->
-                    if rules.isDigit char then
-                        Just { digits = String.pushLast char soFar.digits, afterUnderscore = False }
+                        else if char == '_' && not soFar.afterUnderscore && soFar.digits /= "" then
+                            Just { soFar | afterUnderscore = True }
 
-                    else if char == '_' && not soFar.afterUnderscore && soFar.digits /= "" then
-                        Just { soFar | afterUnderscore = True }
-
-                    else
-                        Nothing
+                        else
+                            Nothing
+                    )
     in
     when String.popFirst body is
         Nothing ->
-            Nothing
+            meant Reason.FromOutside Nothing
 
         Just { first } ->
             if not (rules.isDigit first) then
@@ -275,7 +275,7 @@ splitOn isMark text =
         find index =
             when String.popFirst (String.dropFirst index text) is
                 Nothing ->
-                    index
+                    meant Reason.NoMore index
 
                 Just { first } ->
                     if isMark first then

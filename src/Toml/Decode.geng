@@ -215,6 +215,7 @@ import Result exposing (Result(..))
 import String
 import Toml
 import Toml.Ast as Ast
+import Toml.Reason as Reason
 import Toml.Table as Table exposing (Table)
 
 
@@ -400,10 +401,12 @@ int =
                         Ok small
 
                     Nothing ->
-                        Err
-                            (Custom
-                                (BigInt.toString whole
-                                    ++ " does not fit in an Int; use bigInt to read it exactly"
+                        meant Reason.FromOutside
+                            (Err
+                                (Custom
+                                    (BigInt.toString whole
+                                        ++ " does not fit in an Int; use bigInt to read it exactly"
+                                    )
                                 )
                             )
 
@@ -616,7 +619,7 @@ field name inner =
                         run inner item |> Result.mapError (\reason -> Field { name = name, inner = reason })
 
                     Nothing ->
-                        Err (Field { name = name, inner = Custom "no such key" })
+                        meant Reason.FromOutside (Err (Field { name = name, inner = Custom "no such key" }))
 
             _ ->
                 Err (Expected { wanted = "a table", found = describe content })
@@ -650,7 +653,7 @@ optionalField name inner =
                             |> Result.mapError (\reason -> Field { name = name, inner = reason })
 
                     Nothing ->
-                        Ok Nothing
+                        meant Reason.NotKnown (Ok Nothing)
 
             _ ->
                 Err (Expected { wanted = "a table", found = describe content })
@@ -728,18 +731,10 @@ oneOf choices =
     Decoder
         (\content ->
             Array.foldl
+                -- the first that succeeds; each failure kept, for the error
                 (\choice soFar ->
-                    when soFar is
-                        Ok found ->
-                            Ok found
-
-                        Err failures ->
-                            when run choice content is
-                                Ok found ->
-                                    Ok found
-
-                                Err reason ->
-                                    Err (Array.pushLast reason failures)
+                    soFar
+                        |> Result.onError (\failures -> run choice content |> Result.mapError (\reason -> Array.pushLast reason failures))
                 )
                 (Err [])
                 choices
@@ -758,7 +753,7 @@ maybe inner =
                     Ok (Just found)
 
                 Err _ ->
-                    Ok Nothing
+                    meant Reason.FromOutside (Ok Nothing)
         )
 
 
@@ -781,7 +776,7 @@ scalar wanted read =
                     Ok found
 
                 Nothing ->
-                    Err (Expected { wanted = wanted, found = describe content })
+                    meant Reason.FromOutside (Err (Expected { wanted = wanted, found = describe content }))
         )
 
 

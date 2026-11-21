@@ -379,6 +379,8 @@ import Toml.Ast as Ast exposing
     , Trivia
     )
 import Toml.Literal as Literal
+import Toml.Reason as Reason
+import Toml.Slot as Slot exposing (Slot(..))
 
 
 {-| A value on its way into a document, built by one of the functions at the
@@ -432,21 +434,25 @@ type alias Comments =
 -}
 get : Array String -> Document -> Maybe Value
 get path document =
-    indexOf path document
-        |> Maybe.andThen
-            (\index ->
-                when Array.get index document.expressions is
-                    Just expression ->
-                        when expression.content is
-                            Pair fields ->
-                                Just fields.keyval.value
+    lookup path document
+        |> Maybe.map .value
 
-                            _ ->
-                                Nothing
 
-                    Nothing ->
-                        Nothing
-            )
+{-| The key at a path: which expression holds it, and the value it holds.
+-}
+lookup : Array String -> Document -> Maybe { at : Int, value : Value }
+lookup path document =
+    when indexOf path document is
+        Just index ->
+            when (Array.getProven index document.expressions).content is
+                Pair fields ->
+                    Just { at = index, value = fields.keyval.value }
+
+                _ ->
+                    Nothing
+
+        Nothing ->
+            meant Reason.NotKnown Nothing
 
 
 {-| Whether a key is in the document at all.
@@ -501,7 +507,7 @@ comments : Array String -> Document -> Comments
 comments path document =
     when indexOf path document is
         Nothing ->
-            noComments
+            meant Reason.NotKnown noComments
 
         Just index ->
             commentsAt index document
@@ -532,7 +538,7 @@ tableComments : Array String -> Document -> Comments
 tableComments path document =
     when headerIndexOf path document is
         Nothing ->
-            noComments
+            meant Reason.NotKnown noComments
 
         Just index ->
             commentsAt index document
@@ -545,7 +551,7 @@ noComments =
 
 {-| The comments owned by the expression at `index`, a key or a header.
 -}
-commentsAt : Int -> Document -> Comments
+commentsAt : (index : Int where 0 <= index && index < Array.length document.expressions) -> (document : Document) -> Comments
 commentsAt index document =
     let
         start =
@@ -555,9 +561,7 @@ commentsAt index document =
     , leading =
         Array.slice start index document.expressions
             |> Array.mapAndKeepJust ownComment
-    , trailing =
-        Array.get index document.expressions
-            |> Maybe.andThen trailingCommentOf
+    , trailing = trailingCommentOf (Array.getProven index document.expressions)
     }
 
 
@@ -584,10 +588,10 @@ ownComment expression =
             Nothing
 
 
-isHeader : Int -> Array Expression -> Bool
+isHeader : (index : Int where 0 <= index && index < Array.length expressions) -> (expressions : Array Expression) -> Bool
 isHeader index expressions =
-    when Maybe.map .content (Array.get index expressions) is
-        Just (Header _) ->
+    when (Array.getProven index expressions).content is
+        Header _ ->
             True
 
         _ ->
@@ -603,26 +607,18 @@ element, and without it the first key of a file was asked whether the line
 after the final newline was blank, and it was.
 
 -}
-isBlank : Int -> Array Expression -> Bool
+isBlank : (index : Int where -1 <= index && index < Array.length expressions) -> (expressions : Array Expression) -> Bool
 isBlank index expressions =
-    when
-        (if index < 0 then
-            Nothing
+    if index < 0 then
+        False
 
-         else
-            Array.get index expressions
-        )
-    is
-        Just expression ->
-            when expression.content is
-                Empty fields ->
-                    fields.comment == Nothing
+    else
+        when (Array.getProven index expressions).content is
+            Empty fields ->
+                fields.comment == Nothing
 
-                _ ->
-                    False
-
-        Nothing ->
-            False
+            _ ->
+                False
 
 
 {-| Set the comments that belong to a key, by the same convention
@@ -663,7 +659,7 @@ setComments : Array String -> Comments -> Document -> Document
 setComments path wanted document =
     when indexOf path document is
         Nothing ->
-            document
+            meant Reason.NotKnown document
 
         Just index ->
             setCommentsAt AKey index wanted document
@@ -702,7 +698,7 @@ setTableComments : Array String -> Comments -> Document -> Document
 setTableComments path wanted document =
     when headerIndexOf path document is
         Nothing ->
-            document
+            meant Reason.NotKnown document
 
         Just index ->
             setCommentsAt ATable index wanted document
@@ -717,13 +713,11 @@ type Owner
     | ATable
 
 
-setCommentsAt : Owner -> Int -> Comments -> Document -> Document
+setCommentsAt : Owner -> (index : Int where 0 <= index && index < Array.length document.expressions) -> Comments -> (document : Document) -> Document
 setCommentsAt owner index wanted document =
     let
         indent =
-            Array.get index document.expressions
-                |> Maybe.map .indent
-                |> Maybe.withDefault ""
+            (Array.getProven index document.expressions).indent
 
         block =
             Array.map
@@ -807,7 +801,7 @@ setTrailingComment text expression =
                         current
 
                 Nothing ->
-                    ""
+                    meant Reason.NotGiven ""
 
         comment =
             Maybe.map (\it -> { text = it }) text
@@ -886,17 +880,17 @@ top-level key `""` is the path `[ "" ]`.
 -}
 set : Array String -> Value -> Document -> Document
 set path content document =
-    when indexOf path document is
-        Just index ->
-            if Maybe.map (sameValue content) (get path document) == Just True then
+    when Slot.fromMaybe (lookup path document) is
+        Present found ->
+            if sameValue content found.value then
                 document
 
             else
                 rebuild document
-                    (Array.update index (replaceValue content) document.expressions)
+                    (Array.update found.at (replaceValue content) document.expressions)
 
-        Nothing ->
-            insert path content document
+        Absent ->
+            (insert path content document)
 
 
 {-| Write a value even when the file already means it, so that how the value
@@ -930,13 +924,13 @@ On a key that is not in the document this is the same as `set`, and like
 -}
 respell : Array String -> Value -> Document -> Document
 respell path content document =
-    when indexOf path document is
-        Just index ->
+    when Slot.fromMaybe (lookup path document) is
+        Present found ->
             rebuild document
-                (Array.update index (replaceValue content) document.expressions)
+                (Array.update found.at (replaceValue content) document.expressions)
 
-        Nothing ->
-            insert path content document
+        Absent ->
+            (insert path content document)
 
 
 {-| Set a value, and explain the key if this is the call that put it there.
@@ -1011,15 +1005,17 @@ the whole inline table with [`inlineTable`](#inlineTable).
 -}
 appendTo : Array String -> Value -> Document -> Document
 appendTo path content document =
-    when get path document is
-        Just (Ast.ArrayVal lit) ->
-            setArray path (appended content lit) document
+    when Slot.fromMaybe (lookup path document) is
+        Present found ->
+            when found.value is
+                Ast.ArrayVal lit ->
+                    setArrayAt found.at (appended content lit) document
 
-        Just _ ->
-            document
+                _ ->
+                    document
 
-        Nothing ->
-            set path (array [ content ]) document
+        Absent ->
+            (set path (array [ content ]) document)
 
 
 {-| Add one element to the array a key holds, at a position. The elements
@@ -1052,24 +1048,27 @@ other than an array.
 -}
 insertAt : Array String -> Int -> Value -> Document -> Document
 insertAt path index content document =
-    when get path document is
-        Just (Ast.ArrayVal lit) ->
-            when insertedAt index content lit is
-                Just longer ->
-                    setArray path longer document
+    when Slot.fromMaybe (lookup path document) is
+        Present found ->
+            when found.value is
+                Ast.ArrayVal lit ->
+                    when insertedAt index content lit is
+                        Just longer ->
+                            setArrayAt found.at longer document
 
-                Nothing ->
+                        Nothing ->
+                            meant Reason.OutOfRange document
+
+                _ ->
                     document
 
-        Just _ ->
-            document
-
-        Nothing ->
-            if index == 0 then
+        Absent ->
+            (if index == 0 then
                 set path (array [ content ]) document
 
-            else
+             else
                 document
+            )
 
 
 {-| Replace one element of the array a key holds, by position. Nothing else
@@ -1100,10 +1099,10 @@ setAt path index content document =
                 document
 
             else
-                setArray path (withValueAt index content found.lit) document
+                setArrayAt found.at (withValueAt index content found.lit) document
 
         Nothing ->
-            document
+            meant Reason.NotKnown document
 
 
 {-| Replace one element of an array even when it already means the new value,
@@ -1132,10 +1131,10 @@ respellAt : Array String -> Int -> Value -> Document -> Document
 respellAt path index content document =
     when elementOf path index document is
         Just found ->
-            setArray path (withValueAt index content found.lit) document
+            setArrayAt found.at (withValueAt index content found.lit) document
 
         Nothing ->
-            document
+            meant Reason.NotKnown document
 
 
 {-| The array a key holds and one element of it. `setAt` and `respellAt` both
@@ -1145,15 +1144,20 @@ elementOf :
     Array String
     -> Int
     -> Document
-    -> Maybe { lit : ArrayLit, element : ArrayElement }
+    -> Maybe { at : Int, lit : ArrayLit, element : ArrayElement }
 elementOf path index document =
-    when get path document is
-        Just (Ast.ArrayVal lit) ->
-            elementAt index lit
-                |> Maybe.map (\element -> { lit = lit, element = element })
+    when lookup path document is
+        Just found ->
+            when found.value is
+                Ast.ArrayVal lit ->
+                    elementAt index lit
+                        |> Maybe.map (\element -> { at = found.at, lit = lit, element = element })
 
-        _ ->
-            Nothing
+                _ ->
+                    Nothing
+
+        Nothing ->
+            meant Reason.NotKnown Nothing
 
 
 {-| The array with the value at one index replaced. Everything else about that
@@ -1190,17 +1194,22 @@ not count from the end.
 -}
 removeAt : Array String -> Int -> Document -> Document
 removeAt path index document =
-    when get path document is
-        Just (Ast.ArrayVal lit) ->
-            when removedFrom index lit is
-                Just shorter ->
-                    setArray path shorter document
+    when lookup path document is
+        Just found ->
+            when found.value is
+                Ast.ArrayVal lit ->
+                    when removedFrom index lit is
+                        Just shorter ->
+                            setArrayAt found.at shorter document
 
-                Nothing ->
+                        Nothing ->
+                            meant Reason.OutOfRange document
+
+                _ ->
                     document
 
-        _ ->
-            document
+        Nothing ->
+            meant Reason.NotKnown document
 
 
 {-| Move one element of the array a key holds from one position to another, and
@@ -1246,32 +1255,32 @@ so `moveAt [ "a" ] 0 1` leaves the file alone.
 -}
 moveAt : Array String -> Int -> Int -> Document -> Document
 moveAt path from to document =
-    when get path document is
-        Just (Ast.ArrayVal lit) ->
-            when movedIn from to lit is
-                Just moved ->
-                    setArray path moved document
+    when lookup path document is
+        Just found ->
+            when found.value is
+                Ast.ArrayVal lit ->
+                    when movedIn from to lit is
+                        Just moved ->
+                            setArrayAt found.at moved document
 
-                Nothing ->
+                        Nothing ->
+                            meant Reason.OutOfRange document
+
+                _ ->
                     document
 
-        _ ->
-            document
-
-
-{-| Put an edited array back into the document. The callers above have all
-checked that the value changed, so this does not ask
-[`sameValue`](#sameValue) again.
--}
-setArray : Array String -> ArrayLit -> Document -> Document
-setArray path lit document =
-    when indexOf path document is
-        Just index ->
-            rebuild document
-                (Array.update index (replaceValue (Ast.ArrayVal lit)) document.expressions)
-
         Nothing ->
-            document
+            meant Reason.NotKnown document
+
+
+{-| Put an edited array back into the document, at the expression
+[`lookup`](#lookup) found it in. The callers above have all checked that the
+value changed, so this does not ask [`sameValue`](#sameValue) again.
+-}
+setArrayAt : Int -> ArrayLit -> Document -> Document
+setArrayAt at lit document =
+    rebuild document
+        (Array.update at (replaceValue (Ast.ArrayVal lit)) document.expressions)
 
 
 {-| The element at an index, if there is one. `Array.get -1` in Gren returns
@@ -1350,52 +1359,58 @@ emptied, because a comma is about to be written where that space was, and
 -}
 appended : Value -> ArrayLit -> ArrayLit
 appended content lit =
-    when Array.popLast lit.elements is
-        Nothing ->
-            { elements =
-                [ { before = upToFirstBreak lit.trailing
-                  , value = content
-                  , after = closingOf lit.trailing
-                  , comma = False
-                  }
-                ]
-            , trailing = []
-            }
+    if Array.length lit.elements == 0 then
+        -- `[]`: the one element, alone between the brackets
+        { elements =
+            [ { before = upToFirstBreak lit.trailing
+              , value = content
+              , after = closingOf lit.trailing
+              , comma = False
+              }
+            ]
+        , trailing = []
+        }
 
-        Just { last, initial } ->
-            let
-                boundary =
-                    Array.prepend last.after lit.trailing
+    else
+        let
+            last =
+                Array.getProven (Array.length lit.elements - 1) lit.elements
 
-                closing =
-                    closingOf boundary
-            in
-            { elements =
-                initial
-                    |> Array.pushLast { last | comma = True, after = [] }
-                    |> Array.pushLast
-                        { before =
-                            if hasBreak boundary then
-                                Array.prepend (upToFirstBreak boundary) (indentOf last.before)
+            initial =
+                Array.dropLast 1 lit.elements
 
-                            else
-                                last.before
-                        , value = content
-                        , after =
-                            if last.comma then
-                                []
+            boundary =
+                Array.prepend last.after lit.trailing
 
-                            else
-                                closing
-                        , comma = last.comma
-                        }
-            , trailing =
-                if last.comma then
-                    closing
+            closing =
+                closingOf boundary
+        in
+        { elements =
+            initial
+                |> Array.pushLast { last | comma = True, after = [] }
+                |> Array.pushLast
+                    { before =
+                        if hasBreak boundary then
+                            Array.prepend (upToFirstBreak boundary) (indentOf last.before)
 
-                else
-                    []
-            }
+                        else
+                            last.before
+                    , value = content
+                    , after =
+                        if last.comma then
+                            []
+
+                        else
+                            closing
+                    , comma = last.comma
+                    }
+        , trailing =
+            if last.comma then
+                closing
+
+            else
+                []
+        }
 
 
 {-| The array with one more element at an index, or on the end when the index is
@@ -1417,38 +1432,40 @@ becomes `[2,1]`, exactly as appending to it makes `[1,2]`.
 -}
 insertedAt : Int -> Value -> ArrayLit -> Maybe ArrayLit
 insertedAt index content lit =
-    if index < 0 then
+    if index < 0 || index > Array.length lit.elements then
         Nothing
 
     else if index == Array.length lit.elements then
         Just (appended content lit)
 
     else
-        when elementAt index lit is
-            Nothing ->
-                Nothing
+        let
+            displaced =
+                Array.getProven index lit.elements
 
-            Just displaced ->
-                Just
-                    { lit
-                        | elements =
-                            Array.prepend
-                                (Array.takeFirst index lit.elements
-                                    |> Array.pushLast
-                                        { before = displaced.before
-                                        , value = content
-                                        , after = []
-                                        , comma = True
-                                        }
+            separator =
+                separatorFor index lit
+        in
+        Just
+            { lit
+                | elements =
+                    Array.prepend
+                        (Array.takeFirst index lit.elements
+                            |> Array.pushLast
+                                { before = displaced.before
+                                , value = content
+                                , after = []
+                                , comma = True
+                                }
+                        )
+                        (Array.dropFirst index lit.elements
+                            |> Array.update
+                                0
+                                (\element ->
+                                    { element | before = separator }
                                 )
-                                (Array.dropFirst index lit.elements
-                                    |> Array.update
-                                        0
-                                        (\element ->
-                                            { element | before = separatorFor index lit }
-                                        )
-                                )
-                    }
+                        )
+            }
 
 
 {-| What goes in front of the element at an index once something has been
@@ -1456,26 +1473,13 @@ written above it: the separator it already had, or, when it was the first
 element, the one in front of whatever follows it. Any note in there stays with
 the line it was written on, which is now the new element's.
 -}
-separatorFor : Int -> ArrayLit -> Trivia
+separatorFor : (index : Int where 0 <= index && index < Array.length lit.elements) -> (lit : ArrayLit) -> Trivia
 separatorFor index lit =
-    when elementAt index lit is
-        Nothing ->
-            []
+    if index == 0 && Array.length lit.elements > 1 then
+        closingOf (Array.getProven 1 lit.elements).before
 
-        Just displaced ->
-            when
-                (if index == 0 then
-                    Array.get 1 lit.elements
-
-                 else
-                    Nothing
-                )
-            is
-                Just following ->
-                    closingOf following.before
-
-                Nothing ->
-                    closingOf displaced.before
+    else
+        closingOf (Array.getProven index lit.elements).before
 
 
 {-| The array with one element gone and the whitespace on either side of it
@@ -1504,55 +1508,58 @@ element keeps it; if there is one, it goes into `trailing`.
 -}
 removedFrom : Int -> ArrayLit -> Maybe ArrayLit
 removedFrom index lit =
-    when elementAt index lit is
-        Nothing ->
-            Nothing
+    if index < 0 || index >= Array.length lit.elements then
+        Nothing
 
-        Just gone ->
-            if index == Array.length lit.elements - 1 then
-                let
-                    survivors =
-                        afterLast gone.before (Array.prepend gone.after lit.trailing)
-                in
-                Just
-                    { elements =
-                        Array.dropLast 1 lit.elements
+    else
+        let
+            gone =
+                Array.getProven index lit.elements
+        in
+        if index == Array.length lit.elements - 1 then
+            let
+                survivors =
+                    afterLast gone.before (Array.prepend gone.after lit.trailing)
+            in
+            Just
+                { elements =
+                    Array.dropLast 1 lit.elements
+                        |> Array.update
+                            (index - 1)
+                            (\previous ->
+                                { previous
+                                    | comma = gone.comma
+                                    , after =
+                                        if gone.comma then
+                                            previous.after
+
+                                        else
+                                            survivors
+                                }
+                            )
+                , trailing =
+                    if gone.comma || Array.length lit.elements == 1 then
+                        survivors
+
+                    else
+                        []
+                }
+
+        else
+            Just
+                { lit
+                    | elements =
+                        Array.remove index lit.elements
                             |> Array.update
-                                (index - 1)
-                                (\previous ->
-                                    { previous
-                                        | comma = gone.comma
-                                        , after =
-                                            if gone.comma then
-                                                previous.after
-
-                                            else
-                                                survivors
+                                index
+                                (\next ->
+                                    { next
+                                        | before =
+                                            Array.prepend (upToFirstBreak gone.before)
+                                                (afterFirstBreak next.before)
                                     }
                                 )
-                    , trailing =
-                        if gone.comma || Array.length lit.elements == 1 then
-                            survivors
-
-                        else
-                            []
-                    }
-
-            else
-                Just
-                    { lit
-                        | elements =
-                            Array.remove index lit.elements
-                                |> Array.update
-                                    index
-                                    (\next ->
-                                        { next
-                                            | before =
-                                                Array.prepend (upToFirstBreak gone.before)
-                                                    (afterFirstBreak next.before)
-                                        }
-                                    )
-                    }
+                }
 
 
 {-| The array with the element at one index at another, its note with it.
@@ -1577,14 +1584,9 @@ movedIn from to lit =
         Just lit
 
     else
-        when elementAt from lit is
-            Nothing ->
-                Nothing
-
-            Just moving ->
-                removedFrom from lit
-                    |> Maybe.andThen (insertedAt to moving.value)
-                    |> Maybe.andThen (withNoteAfter to (noteAfter from lit))
+        removedFrom from lit
+            |> Maybe.andThen (insertedAt to (Array.getProven from lit.elements).value)
+            |> Maybe.andThen (withNoteAfter to (noteAfter from lit))
 
 
 {-| A note written against a value: the comment, and the spaces that held it off
@@ -1605,27 +1607,21 @@ and where a bare last element keeps everything, then the next element's
 `before`, or the array's `trailing` for a last element with a comma. Joining the
 two and reading the first line ending finds it wherever it is.
 -}
-noteAfter : Int -> ArrayLit -> Maybe Note
+noteAfter : (index : Int where 0 <= index && index < Array.length lit.elements) -> (lit : ArrayLit) -> Maybe Note
 noteAfter index lit =
-    when elementAt index lit is
-        Nothing ->
-            Nothing
-
-        Just element ->
-            noteOn (Array.prepend element.after (nextTrivia index lit))
+    noteOn (Array.prepend (Array.getProven index lit.elements).after (nextTrivia index lit))
 
 
 {-| The trivia after an element's comma: the following element's indent, or what
 is in front of the closing bracket when there is no following element.
 -}
-nextTrivia : Int -> ArrayLit -> Trivia
+nextTrivia : (index : Int where 0 <= index && index < Array.length lit.elements) -> (lit : ArrayLit) -> Trivia
 nextTrivia index lit =
-    when Array.get (index + 1) lit.elements is
-        Just next ->
-            next.before
+    if index + 1 < Array.length lit.elements then
+        (Array.getProven (index + 1) lit.elements).before
 
-        Nothing ->
-            lit.trailing
+    else
+        lit.trailing
 
 
 {-| The note on the first line of a boundary, if that line ends with one.
@@ -1634,11 +1630,11 @@ noteOn : Trivia -> Maybe Note
 noteOn pieces =
     when firstBreak pieces is
         Nothing ->
-            Nothing
+            meant Reason.NotGiven Nothing
 
         Just at ->
-            when Array.get at pieces is
-                Just (Ast.Break fields) ->
+            when Array.getProven at pieces is
+                Ast.Break fields ->
                     Maybe.map
                         (\comment -> { spaces = spacesBefore at pieces, comment = comment })
                         fields.comment
@@ -1651,21 +1647,18 @@ noteOn pieces =
 `Array.get -1` in Gren is the *last* piece, so a comment at the very start of a
 boundary is answered before the lookup rather than by it.
 -}
-spacesBefore : Int -> Trivia -> Trivia
+spacesBefore : (at : Int where 0 <= at && at < Array.length pieces) -> (pieces : Trivia) -> Trivia
 spacesBefore at pieces =
-    when
-        (if at <= 0 then
-            Nothing
+    if at <= 0 then
+        []
 
-         else
-            Array.get (at - 1) pieces
-        )
-    is
-        Just (Ast.Spaces text) ->
-            [ Ast.Spaces text ]
+    else
+        when Array.getProven (at - 1) pieces is
+            Ast.Spaces text ->
+                [ Ast.Spaces text ]
 
-        _ ->
-            []
+            _ ->
+                []
 
 
 {-| The array with a note written on the line the element at an index ends,
@@ -1678,41 +1671,44 @@ withNoteAfter : Int -> Maybe Note -> ArrayLit -> Maybe ArrayLit
 withNoteAfter index note lit =
     when note is
         Nothing ->
-            Just lit
+            meant Reason.NotGiven (Just lit)
 
         Just written ->
-            when elementAt index lit is
-                Nothing ->
-                    Nothing
+            if index < 0 || index >= Array.length lit.elements then
+                Nothing
 
-                Just element ->
-                    if hasBreak element.after then
-                        placeNote written element.after
-                            |> Maybe.map
-                                (\filled ->
-                                    { lit
-                                        | elements =
-                                            Array.update index
-                                                (\one -> { one | after = filled })
-                                                lit.elements
-                                    }
-                                )
+            else
+                let
+                    element =
+                        Array.getProven index lit.elements
+                in
+                if hasBreak element.after then
+                    placeNote written element.after
+                        |> Maybe.map
+                            (\filled ->
+                                { lit
+                                    | elements =
+                                        Array.update index
+                                            (\one -> { one | after = filled })
+                                            lit.elements
+                                }
+                            )
 
-                    else if index + 1 < Array.length lit.elements then
-                        placeNote written (nextTrivia index lit)
-                            |> Maybe.map
-                                (\filled ->
-                                    { lit
-                                        | elements =
-                                            Array.update (index + 1)
-                                                (\next -> { next | before = filled })
-                                                lit.elements
-                                    }
-                                )
+                else if index + 1 < Array.length lit.elements then
+                    placeNote written (nextTrivia index lit)
+                        |> Maybe.map
+                            (\filled ->
+                                { lit
+                                    | elements =
+                                        Array.update (index + 1)
+                                            (\next -> { next | before = filled })
+                                            lit.elements
+                                }
+                            )
 
-                    else
-                        placeNote written lit.trailing
-                            |> Maybe.map (\filled -> { lit | trailing = filled })
+                else
+                    placeNote written lit.trailing
+                        |> Maybe.map (\filled -> { lit | trailing = filled })
 
 
 {-| The boundary with a note written on its first line: the spaces the note
@@ -1728,11 +1724,11 @@ placeNote : Note -> Trivia -> Maybe Trivia
 placeNote note pieces =
     when firstBreak pieces is
         Nothing ->
-            Nothing
+            meant Reason.NoRoom Nothing
 
         Just at ->
-            when Array.get at pieces is
-                Just (Ast.Break fields) ->
+            when Array.getProven at pieces is
+                Ast.Break fields ->
                     if fields.comment /= Nothing then
                         Nothing
 
@@ -1799,7 +1795,7 @@ upToFirstBreak pieces =
             Array.takeFirst (at + 1) pieces
 
         Nothing ->
-            pieces
+            meant Reason.NotGiven pieces
 
 
 {-| The pieces of a boundary after its first line ending: the indent of whatever
@@ -1812,7 +1808,7 @@ afterFirstBreak pieces =
             Array.dropFirst (at + 1) pieces
 
         Nothing ->
-            []
+            meant Reason.NotGiven []
 
 
 {-| The indent a line starts with: whatever follows the last line ending.
@@ -1824,37 +1820,27 @@ indentOf pieces =
             Array.dropFirst (at + 1) pieces
 
         Nothing ->
-            []
+            meant Reason.NotGiven []
 
 
-firstBreak : Trivia -> Maybe Int
+firstBreak : (pieces : Trivia) -> Maybe (b : Int where 0 <= b && b < Array.length pieces)
 firstBreak pieces =
-    Array.indexedFoldl
-        (\index piece found ->
-            when { found = found, piece = piece } is
-                { found = Nothing, piece = Ast.Break _ } ->
-                    Just index
-
-                _ ->
-                    found
-        )
-        Nothing
-        pieces
+    firstIndexWhere isBreak pieces
 
 
-lastBreak : Trivia -> Maybe Int
+lastBreak : (pieces : Trivia) -> Maybe (b : Int where 0 <= b && b < Array.length pieces)
 lastBreak pieces =
-    Array.indexedFoldl
-        (\index piece found ->
-            when piece is
-                Ast.Break _ ->
-                    Just index
+    lastIndexWhere isBreak pieces
 
-                _ ->
-                    found
-        )
-        Nothing
-        pieces
+
+isBreak : Ast.TriviaPiece -> Bool
+isBreak piece =
+    when piece is
+        Ast.Break _ ->
+            True
+
+        _ ->
+            False
 
 
 hasBreak : Trivia -> Bool
@@ -1888,12 +1874,16 @@ withoutComments pieces =
 
 dropTrailingSpaces : Trivia -> Trivia
 dropTrailingSpaces pieces =
-    when Array.last pieces is
-        Just (Ast.Spaces _) ->
-            Array.dropLast 1 pieces
+    if Array.length pieces == 0 then
+        pieces
 
-        _ ->
-            pieces
+    else
+        when Array.getProven (Array.length pieces - 1) pieces is
+            Ast.Spaces _ ->
+                Array.dropLast 1 pieces
+
+            _ ->
+                pieces
 
 
 {-| Whether two values mean the same thing, whatever they were written as.
@@ -2025,7 +2015,7 @@ remove : Array String -> Document -> Document
 remove path document =
     when indexOf path document is
         Nothing ->
-            document
+            meant Reason.NotKnown document
 
         Just index ->
             let
@@ -2050,7 +2040,7 @@ there is one, and what is left below them is blank too, or is the end of the
 file. Two blank lines around a block become one when the block goes, which is
 the file as it would have been written had the key never been there.
 -}
-closesUp : Int -> Int -> Array Expression -> Bool
+closesUp : (block : Int where 0 <= block && block <= Array.length expressions) -> (after : Int where 0 <= after) -> (expressions : Array Expression) -> Bool
 closesUp block after expressions =
     isBlank (block - 1) expressions
         && (after >= Array.length expressions || isBlank after expressions)
@@ -2080,7 +2070,7 @@ rename : Array String -> String -> Document -> Document
 rename path name document =
     when indexOf path document is
         Nothing ->
-            document
+            meant Reason.NotKnown document
 
         Just index ->
             let
@@ -2157,10 +2147,9 @@ renameTable path name document =
 
 {-| The path of the table header in effect at an expression.
 -}
-headerAt : Int -> Document -> Array String
+headerAt : (index : Int where 0 <= index && index < Array.length document.expressions) -> (document : Document) -> Array String
 headerAt index document =
-    Array.get index (headers document.expressions)
-        |> Maybe.withDefault []
+    Array.getProven index (headers document.expressions)
 
 
 renameKeyPart : Int -> String -> Expression -> Expression
@@ -2257,7 +2246,8 @@ ownedBlockLeads : Array Bool -> Array Expression -> Array Bool
 ownedBlockLeads owned expressions =
     let
         isOwned at =
-            Maybe.withDefault False (Array.get at owned)
+            -- Past the last expression nothing is owned.
+            Maybe.withDefault (meant Reason.NoMore False) (Array.get at owned)
 
         isComment expression =
             when expression.content is
@@ -2267,7 +2257,7 @@ ownedBlockLeads owned expressions =
                             True
 
                         Nothing ->
-                            False
+                            meant Reason.NotGiven False
 
                 _ ->
                     False
@@ -2321,8 +2311,20 @@ rebuild original expressions =
         | expressions =
             expressions
                 |> withInteriorNewlines (styleOf original)
+                |> nonEmptyLines
                 |> endedLike original.expressions
     }
+
+
+{-| A document's lines, at least one: an edit that took away its only line
+leaves the empty file's one empty line, as reading an empty file does. -}
+nonEmptyLines : Array Expression -> (r : Array Expression where 1 <= Array.length r)
+nonEmptyLines expressions =
+    if Array.length expressions == 0 then
+        [ { indent = "", content = Empty { comment = Nothing }, newline = Nothing } ]
+
+    else
+        expressions
 
 
 withInteriorNewlines : Newline -> Array Expression -> Array Expression
@@ -2344,7 +2346,7 @@ withInteriorNewlines style expressions =
 
 {-| Give the result the same ending the original had.
 -}
-endedLike : Array Expression -> Array Expression -> Array Expression
+endedLike : Array Expression -> (result : Array Expression where 1 <= Array.length result) -> (r : Array Expression where 1 <= Array.length r)
 endedLike original result =
     when { was = lastNewline original, now = lastNewline result } is
         { was = Nothing, now = Just style } ->
@@ -2363,14 +2365,16 @@ lastNewline expressions =
         |> Maybe.andThen .newline
 
 
-setLastNewline : Maybe Newline -> Array Expression -> Array Expression
+setLastNewline : Maybe Newline -> (expressions : Array Expression where 1 <= Array.length expressions) -> (r : Array Expression where Array.length r == Array.length expressions)
 setLastNewline ending expressions =
-    when Array.popLast expressions is
-        Just { last, initial } ->
-            Array.pushLast { last | newline = ending } initial
+    let
+        at =
+            Array.length expressions - 1
 
-        Nothing ->
-            expressions
+        last =
+            Array.getProven at expressions
+    in
+    Array.set at { last | newline = ending } expressions
 
 
 -- FINDING
@@ -2385,34 +2389,61 @@ here](#what-a-path-means-here). It is also the item a new key is added to, so
 reading and writing agree about which `[[peer]]` a path names.
 
 -}
-indexOf : Array String -> Document -> Maybe Int
+indexOf : Array String -> (document : Document) -> Maybe (i : Int where 0 <= i && i < Array.length document.expressions)
 indexOf path document =
-    Array.map2
-        (\expression header ->
-            when expression.content is
-                Pair fields ->
-                    Array.prepend header (Literal.path fields.keyval.key) == path
+    let
+        owners =
+            headers document.expressions
 
-                _ ->
-                    False
-        )
-        document.expressions
-        (headers document.expressions)
-        |> lastIndexOfTrue
+        flags =
+            Array.indexedMap
+                (\index expression ->
+                    when expression.content is
+                        Pair fields ->
+                            Array.prepend (Array.getProven index owners) (Literal.path fields.keyval.key) == path
+
+                        _ ->
+                            False
+                )
+                document.expressions
+    in
+    lastIndexWhere identity flags
 
 
-lastIndexOfTrue : Array Bool -> Maybe Int
-lastIndexOfTrue flags =
-    Array.indexedFoldl
-        (\index flag found ->
-            if flag then
-                Just index
+lastIndexWhere : (a -> Bool) -> (items : Array a) -> Maybe (i : Int where 0 <= i && i < Array.length items)
+lastIndexWhere test items =
+    let
+        scan : (at : Int where at < Array.length items) -> Maybe (found : Int where 0 <= found && found < Array.length items)
+        scan at =
+            if at < 0 then
+                Nothing
+
+            else if test (Array.getProven at items) then
+                Just at
 
             else
-                found
-        )
-        Nothing
-        flags
+                scan (at - 1)
+    in
+    scan (Array.length items - 1)
+
+
+{-| The index of the first item that passes, scanning from the start.
+-}
+firstIndexWhere : (a -> Bool) -> (items : Array a) -> Maybe (i : Int where 0 <= i && i < Array.length items)
+firstIndexWhere test items =
+    let
+        scan : (at : Int where 0 <= at) -> Maybe (found : Int where 0 <= found && found < Array.length items)
+        scan at =
+            if at >= Array.length items then
+                Nothing
+
+            else if test (Array.getProven at items) then
+                Just at
+
+            else
+                scan (at + 1)
+    in
+    scan 0
 
 
 {-| The index of the `[header]` line for the table at `path`.
@@ -2426,22 +2457,17 @@ first header is where `Toml.Encode` writes it. The two live in separate
 functions so that neither choice can leak into the other.
 
 -}
-headerIndexOf : Array String -> Document -> Maybe Int
+headerIndexOf : Array String -> (document : Document) -> Maybe (i : Int where 0 <= i && i < Array.length document.expressions)
 headerIndexOf path document =
-    Array.indexedFoldl
-        (\index expression found ->
-            when { found = found, content = expression.content } is
-                { found = Nothing, content = Header fields } ->
-                    if Literal.path fields.header.key == path then
-                        Just index
-
-                    else
-                        Nothing
+    firstIndexWhere
+        (\expression ->
+            when expression.content is
+                Header fields ->
+                    Literal.path fields.header.key == path
 
                 _ ->
-                    found
+                    False
         )
-        Nothing
         document.expressions
 
 
@@ -2452,24 +2478,27 @@ For a header expression this is its own path, so that `[a]` counts as being in
 than before it.
 
 -}
-headers : Array Expression -> Array (Array String)
+headers : (expressions : Array Expression) -> (owners : Array (Array String) where Array.length owners == Array.length expressions)
 headers expressions =
-    Array.foldl
-        (\expression soFar ->
-            let
-                next =
-                    when expression.content is
-                        Header fields ->
-                            Literal.path fields.header.key
+    let
+        go : (at : Int where 0 <= at && at <= Array.length expressions) -> Array String -> (found : Array (Array String) where Array.length found == at) -> (built : Array (Array String) where Array.length built == Array.length expressions)
+        go at current found =
+            if at == Array.length expressions then
+                found
 
-                        _ ->
-                            soFar.current
-            in
-            { current = next, found = Array.pushLast next soFar.found }
-        )
-        { current = [], found = [] }
-        expressions
-        |> .found
+            else
+                let
+                    next =
+                        when (Array.getProven at expressions).content is
+                            Header fields ->
+                                Literal.path fields.header.key
+
+                            _ ->
+                                current
+                in
+                go (at + 1) next (Array.pushLast next found)
+    in
+    go 0 [] []
 
 
 {-| The first expression that belongs to the key at `index`: the start of the
@@ -2479,29 +2508,26 @@ A blank line ends the block, and so does anything that is not an own-line
 comment.
 
 -}
-firstOwned : Int -> Array Expression -> Int
+firstOwned : (index : Int where 0 <= index && index < Array.length expressions) -> (expressions : Array Expression) -> (blockStart : Int where 0 <= blockStart && blockStart <= index)
 firstOwned index expressions =
     let
+        walk : (at : Int where 0 <= at && at <= index) -> (walked : Int where 0 <= walked && walked <= index)
         walk at =
             if at <= 0 then
                 at
 
             else
-                when Array.get (at - 1) expressions is
-                    Just previous ->
-                        when previous.content is
-                            Empty fields ->
-                                when fields.comment is
-                                    Just _ ->
-                                        walk (at - 1)
+                when (Array.getProven (at - 1) expressions).content is
+                    Empty fields ->
+                        when fields.comment is
+                            Just _ ->
+                                walk (at - 1)
 
-                                    Nothing ->
-                                        at
+                            Nothing ->
+                                -- A blank line ends the block.
+                                meant Reason.NotGiven at
 
-                            _ ->
-                                at
-
-                    Nothing ->
+                    _ ->
                         at
     in
     walk index
@@ -2519,7 +2545,7 @@ cut from to expressions =
 
 insert : Array String -> Value -> Document -> Document
 insert path content document =
-    if Array.isEmpty path then
+    if Array.length path == 0 then
         document
 
     else
@@ -2528,7 +2554,7 @@ insert path content document =
                 Array.dropLast 1 path
 
             leaf =
-                Maybe.withDefault "" (Array.last path)
+                Array.getProven (Array.length path - 1) path
 
             pair =
                 { key = Literal.key [ leaf ]
@@ -2537,39 +2563,43 @@ insert path content document =
                 , value = content
                 }
         in
-        when { last = lastOf tablePath document, isRoot = Array.length tablePath == 0 } is
-            { last = Just index } ->
+        when lastOf tablePath document is
+            Just index ->
                 insertAfter index pair document
 
-            { last = Nothing, isRoot = True } ->
-                -- No top-level key to go after. Anything appended now would land
-                -- inside the last table, so the key goes ahead of the first header
-                -- instead, if there is one.
-                when firstHeader document is
-                    Just index ->
-                        insertBefore index pair document
+            Nothing ->
+                -- the table is not in the document yet
+                meant Reason.NotKnown
+                    (if Array.length tablePath == 0 then
+                        -- No top-level key to go after. Anything appended now would land
+                        -- inside the last table, so the key goes ahead of the first header
+                        -- instead, if there is one.
+                        when firstHeader document is
+                            Just index ->
+                                insertBefore index pair document
 
-                    Nothing ->
+                            Nothing ->
+                                -- no header: the key goes at the end
+                                meant Reason.NotKnown (append tablePath pair document)
+
+                     else
                         append tablePath pair document
-
-            _ ->
-                append tablePath pair document
+                    )
 
 
 {-| The first `[header]` in the file, which is where the top-level keys end.
 -}
-firstHeader : Document -> Maybe Int
+firstHeader : (document : Document) -> Maybe (i : Int where 0 <= i && i < Array.length document.expressions)
 firstHeader document =
-    Array.indexedFoldl
-        (\index expression found ->
-            when { found = found, content = expression.content } is
-                { found = Nothing, content = Header _ } ->
-                    Just index
+    firstIndexWhere
+        (\expression ->
+            when expression.content is
+                Header _ ->
+                    True
 
                 _ ->
-                    found
+                    False
         )
-        Nothing
         document.expressions
 
 
@@ -2578,7 +2608,7 @@ belongs to the header, with a blank line between the key and what it was put
 in front of. The blank line is the same one [`Toml.Encode`](Toml-Encode) puts
 before a header, and here it keeps the new key out of the header's block.
 -}
-insertBefore : Int -> Ast.KeyVal -> Document -> Document
+insertBefore : (index : Int where 0 <= index && index < Array.length document.expressions) -> Ast.KeyVal -> (document : Document) -> Document
 insertBefore index pair document =
     let
         at =
@@ -2607,47 +2637,39 @@ goes. Trailing blank lines and floating comments are deliberately skipped: a new
 key belongs beside the keys, not after the gap. For an array of tables this is
 in the last item, which is the item [`indexOf`](#indexOf) finds too.
 -}
-lastOf : Array String -> Document -> Maybe Int
+lastOf : Array String -> (document : Document) -> Maybe (i : Int where 0 <= i && i < Array.length document.expressions)
 lastOf tablePath document =
-    Array.map2
-        (\expression header ->
-            header == tablePath
-                && (when expression.content is
-                        Empty _ ->
-                            False
+    let
+        owners =
+            headers document.expressions
 
-                        _ ->
-                            True
-                   )
-        )
-        document.expressions
-        (headers document.expressions)
-        |> Array.indexedFoldl
-            (\index flag found ->
-                if flag then
-                    Just index
+        flags =
+            Array.indexedMap
+                (\index expression ->
+                    Array.getProven index owners == tablePath
+                        && (when expression.content is
+                                Empty _ ->
+                                    False
 
-                else
-                    found
-            )
-            Nothing
-
-
-insertAfter : Int -> Ast.KeyVal -> Document -> Document
-insertAfter index pair document =
-    when Array.get index document.expressions is
-        Nothing ->
-            document
-
-        Just neighbour ->
-            rebuild document
-                (Array.insert (index + 1)
-                    { indent = neighbour.indent
-                    , content = Pair { keyval = pair, trailing = "", comment = Nothing }
-                    , newline = Just (styleOf document)
-                    }
-                    document.expressions
+                                _ ->
+                                    True
+                           )
                 )
+                document.expressions
+    in
+    lastIndexWhere identity flags
+
+
+insertAfter : (index : Int where 0 <= index && index < Array.length document.expressions) -> Ast.KeyVal -> (document : Document) -> Document
+insertAfter index pair document =
+    rebuild document
+        (Array.insert (index + 1)
+            { indent = (Array.getProven index document.expressions).indent
+            , content = Pair { keyval = pair, trailing = "", comment = Nothing }
+            , newline = Just (styleOf document)
+            }
+            document.expressions
+        )
 
 
 {-| No table for this key yet, so the file grows a `[header]` and the key under
@@ -2667,14 +2689,15 @@ append tablePath pair document =
             , newline = Just style
             }
 
-        headerLine =
+        -- the table's header, made only where it has a name
+        headerOf path =
             { indent = ""
             , content =
                 Header
                     { header =
                         { kind = Std
                         , wsBefore = ""
-                        , key = Literal.key tablePath
+                        , key = Literal.key path
                         , wsAfter = ""
                         }
                     , trailing = ""
@@ -2695,7 +2718,7 @@ append tablePath pair document =
                 [ keyLine ]
 
             else
-                Array.prepend separator [ headerLine, keyLine ]
+                Array.prepend separator [ headerOf tablePath, keyLine ]
     in
     rebuild document (beforeTerminator added document.expressions)
 
@@ -2710,18 +2733,17 @@ then give a newline of its own -- and the file, which used to end with one,
 would not any more.
 
 -}
-beforeTerminator : Array Expression -> Array Expression -> Array Expression
+beforeTerminator : Array Expression -> (expressions : Array Expression where 1 <= Array.length expressions) -> Array Expression
 beforeTerminator added expressions =
-    when Array.popLast expressions is
-        Just { last, initial } ->
-            if isTerminator last then
-                Array.pushLast last (Array.prepend initial added)
+    let
+        last =
+            Array.getProven (Array.length expressions - 1) expressions
+    in
+    if isTerminator last then
+        Array.pushLast last (Array.prepend (Array.dropLast 1 expressions) added)
 
-            else
-                Array.prepend expressions added
-
-        Nothing ->
-            added
+    else
+        Array.prepend expressions added
 
 
 {-| Whether this is the empty expression a file that ends with a newline ends
@@ -2762,7 +2784,7 @@ styleOf : Document -> Newline
 styleOf document =
     Array.mapAndKeepJust .newline document.expressions
         |> Array.first
-        |> Maybe.withDefault Lf
+        |> Maybe.withDefault (meant Reason.NotGiven Lf)
 
 
 -- VALUES

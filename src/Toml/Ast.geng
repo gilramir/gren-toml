@@ -210,7 +210,8 @@ BOM without saying so, and a document that had one must get it back.
 -}
 type alias Document =
     { hasBom : Bool
-    , expressions : Array Expression
+    -- every document has its last line, empty or not, so at least one
+    , expressions : Array Expression where 1 <= Array.length expressions
     }
 
 

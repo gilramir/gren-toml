@@ -37,6 +37,7 @@ import Toml.Ast as Ast exposing
     , TriviaPiece(..)
     , Value(..)
     )
+import Toml.Reason as Reason
 
 
 {-| A whole document.
@@ -69,7 +70,7 @@ expression expr =
                     newline nl
 
                 Nothing ->
-                    ""
+                    meant Reason.NotGiven ""
            )
 
 
@@ -93,7 +94,7 @@ comment note =
             "#" ++ found.text
 
         Nothing ->
-            ""
+            meant Reason.NotGiven ""
 
 
 newline : Newline -> String

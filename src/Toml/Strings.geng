@@ -64,6 +64,7 @@ import BigInt
 import Char
 import Maybe exposing (Maybe(..))
 import String
+import Toml.Reason as Reason
 
 
 {-| Which of the four kinds of string literal.
@@ -135,7 +136,7 @@ value : String -> Maybe String
 value raw =
     when kindOf raw is
         Nothing ->
-            Nothing
+            meant Reason.FromOutside Nothing
 
         Just kind ->
             let
@@ -234,7 +235,7 @@ verbatim options chars =
         step index acc =
             when Array.get index chars is
                 Nothing ->
-                    Just acc
+                    meant Reason.NoMore (Just acc)
 
                 Just char ->
                     if char == cr then
@@ -276,7 +277,7 @@ unescape options chars =
         step index acc =
             when Array.get index chars is
                 Nothing ->
-                    Just acc
+                    meant Reason.NoMore (Just acc)
 
                 Just char ->
                     if char == backslash then
@@ -285,7 +286,7 @@ unescape options chars =
                                 step found.next (acc ++ found.text)
 
                             Nothing ->
-                                Nothing
+                                meant Reason.FromOutside Nothing
 
                     else if char == cr then
                         -- A newline is CRLF or LF. A carriage return on its own
@@ -321,29 +322,30 @@ escapeAt : { multiline : Bool } -> Array Char -> Int -> Maybe { text : String, n
 escapeAt options chars index =
     when Array.get index chars is
         Nothing ->
-            Nothing
+            -- A backslash at the very end.
+            meant Reason.FromOutside Nothing
 
         Just char ->
-            when simpleEscape char is
-                Just text ->
-                    Just { text = text, next = index + 1 }
+            simpleEscape char
+                |> Maybe.map (\text -> { text = text, next = index + 1 })
+                |> Maybe.orElseLazy
+                    (\{} ->
+                        if char == 'x' then
+                            codePoint chars (index + 1) 2
 
-                Nothing ->
-                    if char == 'x' then
-                        codePoint chars (index + 1) 2
+                        else if char == 'u' then
+                            codePoint chars (index + 1) 4
 
-                    else if char == 'u' then
-                        codePoint chars (index + 1) 4
+                        else if char == 'U' then
+                            codePoint chars (index + 1) 8
 
-                    else if char == 'U' then
-                        codePoint chars (index + 1) 8
+                        else if options.multiline then
+                            -- mlb-escaped-nl = escape ws newline *( wschar / newline )
+                            lineEndingEscape chars index
 
-                    else if options.multiline then
-                        -- mlb-escaped-nl = escape ws newline *( wschar / newline )
-                        lineEndingEscape chars index
-
-                    else
-                        Nothing
+                        else
+                            Nothing
+                    )
 
 
 simpleEscape : Char -> Maybe String
@@ -384,45 +386,25 @@ result has to be a Unicode scalar value. The surrogate range is not one, so
 codePoint : Array Char -> Int -> Int -> Maybe { text : String, next : Int }
 codePoint chars index width =
     let
-        collect offset acc =
-            if offset == width then
-                Just acc
+        digits =
+            Array.slice index (index + width) chars
 
-            else
-                when Array.get (index + offset) chars is
-                    Just char ->
-                        if Char.isHexDigit char then
-                            -- Held at one past the largest code point, so
-                            -- that eight digits cannot wrap a 32-bit `Int`
-                            -- back into range: `\UFFFFFFFF` stays too big.
-                            collect (offset + 1) (Basics.min 0x110000 (acc * 16 + hexValue char))
-
-                        else
-                            Nothing
-
-                    Nothing ->
-                        Nothing
+        -- Held at one past the largest code point, so that eight digits
+        -- cannot wrap a 32-bit `Int` back into range: `\UFFFFFFFF` stays too
+        -- big.
+        code =
+            Array.foldl (\char acc -> Basics.min 0x110000 (acc * 16 + hexValue char)) 0 digits
     in
-    collect 0 0
-        |> Maybe.andThen
-            (\code ->
-                if isScalarValue code then
-                    Char.fromCode code
-                        |> Maybe.map
-                            (\char ->
-                                { text = String.fromChar char
-                                , next = index + width
-                                }
-                            )
+    -- Too few digits before the text ends is as wrong as a character that is
+    -- not a hex digit.
+    if Array.length digits /= width || not (Array.all Char.isHexDigit digits) then
+        Nothing
 
-                else
-                    Nothing
-            )
+    else if (0 <= code && code <= 0xD7FF) || (0xE000 <= code && code <= 0x10FFFF) then
+        Just { text = String.fromChar (Char.fromCodeProven code), next = index + width }
 
-
-isScalarValue : Int -> Bool
-isScalarValue code =
-    code <= 0x10FFFF && (code < 0xD800 || code > 0xDFFF)
+    else
+        Nothing
 
 
 hexValue : Char -> Int
@@ -457,7 +439,7 @@ lineEndingEscape chars index =
                         at
 
                 Nothing ->
-                    at
+                    meant Reason.NoMore at
 
         skipAll at =
             when Array.get at chars is
@@ -472,7 +454,7 @@ lineEndingEscape chars index =
                         at
 
                 Nothing ->
-                    at
+                    meant Reason.NoMore at
 
         afterSpaces =
             skipSpaces index
@@ -675,7 +657,7 @@ mlEscaped : Array Char -> Int -> Int -> String -> String
 mlEscaped chars index bare acc =
     when Array.get index chars is
         Nothing ->
-            acc
+            meant Reason.NoMore acc
 
         Just char ->
             if char == quoteChar then
@@ -748,7 +730,7 @@ isMlLiteralBody : Array Char -> Int -> Bool
 isMlLiteralBody chars index =
     when Array.get index chars is
         Nothing ->
-            True
+            meant Reason.NoMore True
 
         Just char ->
             if char == apostropheChar then

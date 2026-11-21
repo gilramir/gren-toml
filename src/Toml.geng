@@ -90,13 +90,13 @@ docs:
 import Array
 import Basics exposing (..)
 import Bytes exposing (Bytes)
-import Bytes.Decode
 import Maybe exposing (Maybe(..))
 import Result exposing (Result(..))
 import String
 import String.Parser.Advanced as P
 import Toml.Ast as Ast
 import Toml.Parse as Parse
+import Toml.Reason as Reason
 import Toml.Write as Write
 
 
@@ -168,7 +168,7 @@ parseBytes : Bytes -> Result Error Document
 parseBytes bytes =
     when Bytes.toString bytes is
         Nothing ->
-            Err { row = 1, col = 1, expecting = "valid UTF-8" }
+            meant Reason.FromOutside (Err { row = 1, col = 1, expecting = "valid UTF-8" })
 
         Just text ->
             -- Geng's decode keeps every character, a leading U+FEFF included;
@@ -209,12 +209,8 @@ parse text =
 -}
 parseDecoded : String -> Result Error Document
 parseDecoded text =
-    when P.run Parse.document {} text is
-        Ok doc ->
-            Ok doc
-
-        Err deadEnds ->
-            Err (chooseError deadEnds)
+    P.run Parse.document {} text
+        |> Result.mapError chooseError
 
 
 {-| Write a document back out.
@@ -303,7 +299,8 @@ chooseError deadEnds =
             }
 
         Nothing ->
-            { row = 1, col = 1, expecting = "a TOML document" }
+            -- The parser always says where it stopped.
+            meant Reason.PromisedElsewhere { row = 1, col = 1, expecting = "a TOML document" }
 
 
 {-| Whether the first three bytes are a UTF-8 byte order mark.
@@ -314,12 +311,7 @@ This is asked of the bytes, because that is where a mark is a mark: a
 -}
 startsWithBom : Bytes -> Bool
 startsWithBom bytes =
-    Bytes.Decode.decode
-        (Bytes.Decode.map3
-            (\a b c -> a == 0xEF && b == 0xBB && c == 0xBF)
-            Bytes.Decode.unsignedInt8
-            Bytes.Decode.unsignedInt8
-            Bytes.Decode.unsignedInt8
-        )
-        bytes
-        |> Maybe.withDefault False
+    Bytes.length bytes >= 3
+        && Bytes.getProven 0 bytes == 0xEF
+        && Bytes.getProven 1 bytes == 0xBB
+        && Bytes.getProven 2 bytes == 0xBF

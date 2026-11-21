@@ -213,6 +213,7 @@ import Toml.Ast as Ast exposing
     , TableKind(..)
     )
 import Toml.Literal as Literal
+import Toml.Reason as Reason
 import Toml.Write as Write
 
 
@@ -361,31 +362,32 @@ element, so without it the first line of the file would be asked whether the
 last one wants a blank after it, and the answer would usually be yes.
 
 -}
-separatesAnything : Int -> Array Expression -> Bool
+separatesAnything : (index : Int where 0 <= index && index < Array.length expressions) -> (expressions : Array Expression) -> Bool
 separatesAnything index expressions =
-    when
-        (if index <= 0 then
-            Nothing
+    if index <= 0 then
+        False
 
-         else
-            Array.get (index - 1) expressions
-        )
-    is
-        Nothing ->
-            False
+    else
+        let
+            previous =
+                Array.getProven (index - 1) expressions
+        in
+        when previous.content is
+            Header _ ->
+                when afterCommentBlock (index + 1) expressions is
+                    Just next ->
+                        when next.content is
+                            Header _ ->
+                                True
 
-        Just previous ->
-            when previous.content is
-                Header _ ->
-                    when Maybe.map .content (afterCommentBlock (index + 1) expressions) is
-                        Just (Header _) ->
-                            True
+                            _ ->
+                                False
 
-                        _ ->
-                            False
+                    Nothing ->
+                        meant Reason.NoMore False
 
-                _ ->
-                    not (isPlainBlank previous)
+            _ ->
+                not (isPlainBlank previous)
 
 
 {-| The first expression at or after `index` that is not an own-line comment.
@@ -411,7 +413,7 @@ afterCommentBlock index expressions =
                     Just expression
 
         Nothing ->
-            Nothing
+            meant Reason.NoMore Nothing
 
 
 isPlainBlank : Expression -> Bool
@@ -558,7 +560,7 @@ trailingSpace comment =
             " "
 
         Nothing ->
-            ""
+            meant Reason.NotGiven ""
 
 
 {-| A `[header]` section, or a `[[header]]` for every item of a table array.
@@ -614,7 +616,7 @@ header path it =
             []
 
 
-headerLine : TableKind -> Array String -> Maybe String -> Content
+headerLine : TableKind -> (path : Array String where 1 <= Array.length path) -> Maybe String -> Content
 headerLine kind path comment =
     Header
         { header =

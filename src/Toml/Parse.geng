@@ -80,6 +80,7 @@ import Toml.Ast as Ast exposing
     , Value(..)
     )
 import Toml.Number as Number
+import Toml.Reason as Reason
 import Toml.Strings as Strings
 
 
@@ -283,7 +284,21 @@ was not at the start of the file, and it is rejected as the grammar says.
 -}
 document : P Document
 document =
-    P.map (\found -> { hasBom = False, expressions = found }) expressions
+    P.map
+        (\found ->
+            -- the grammar's loop ends with the last line, which the checker
+            -- cannot see through it: an empty answer would be the empty file's
+            -- one empty line
+            { hasBom = False
+            , expressions =
+                if Array.length found == 0 then
+                    [ { indent = "", content = Empty { comment = Nothing }, newline = Nothing } ]
+
+                else
+                    found
+            }
+        )
+        expressions
 
 
 {-| `toml = expression *( newline expression )`.
@@ -520,7 +535,7 @@ quotedKey =
                         P.succeed { raw = raw, value = text }
 
                     Nothing ->
-                        P.problem (MalformedKey raw)
+                        meant Reason.FromOutside (P.problem (MalformedKey raw))
             )
 
 
@@ -605,7 +620,7 @@ stringValue =
                         P.succeed (StringVal { raw = raw, value = text })
 
                     Nothing ->
-                        P.problem (MalformedString raw)
+                        meant Reason.FromOutside (P.problem (MalformedString raw))
             )
 
 
@@ -709,43 +724,31 @@ an exponent -- so their order between themselves does not.
 -}
 classify : String -> P Value
 classify raw =
-    when DateTime.fromString raw is
-        Just moment ->
-            P.succeed
-                (if DateTime.isLocal moment then
+    when valueOf raw is
+        Just found ->
+            P.succeed found
+
+        Nothing ->
+            meant Reason.FromOutside (P.problem (MalformedValue raw))
+
+
+{-| What a bare value is, the first of the grammar's forms it reads as:
+a date and time, a date, a time, an integer or a float. -}
+valueOf : String -> Maybe Value
+valueOf raw =
+    DateTime.fromString raw
+        |> Maybe.map
+            (\moment ->
+                if DateTime.isLocal moment then
                     LocalDateTimeVal { raw = raw, value = moment }
 
-                 else
+                else
                     OffsetDateTimeVal { raw = raw, value = moment }
-                )
-
-        Nothing ->
-            when Date.fromString raw is
-                Just day ->
-                    P.succeed (LocalDateVal { raw = raw, value = day })
-
-                Nothing ->
-                    when CivilTime.fromString raw is
-                        Just clock ->
-                            P.succeed (LocalTimeVal { raw = raw, value = clock })
-
-                        Nothing ->
-                            classifyNumber raw
-
-
-classifyNumber : String -> P Value
-classifyNumber raw =
-    when Number.integer raw is
-        Just whole ->
-            P.succeed (IntegerVal { raw = raw, value = whole })
-
-        Nothing ->
-            when Number.float raw is
-                Just fractional ->
-                    P.succeed (FloatVal { raw = raw, value = fractional })
-
-                Nothing ->
-                    P.problem (MalformedValue raw)
+            )
+        |> Maybe.orElseLazy (\{} -> Date.fromString raw |> Maybe.map (\day -> LocalDateVal { raw = raw, value = day }))
+        |> Maybe.orElseLazy (\{} -> CivilTime.fromString raw |> Maybe.map (\clock -> LocalTimeVal { raw = raw, value = clock }))
+        |> Maybe.orElseLazy (\{} -> Number.integer raw |> Maybe.map (\whole -> IntegerVal { raw = raw, value = whole }))
+        |> Maybe.orElseLazy (\{} -> Number.float raw |> Maybe.map (\fractional -> FloatVal { raw = raw, value = fractional }))
 
 
 -- STRING LITERALS
